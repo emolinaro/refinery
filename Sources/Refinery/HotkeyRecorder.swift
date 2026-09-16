@@ -4,11 +4,12 @@ import SwiftUI
 
 /// Captures a global hotkey by listening for the next key press with modifiers.
 ///
-/// A local event monitor (not a global one) is enough because the settings
-/// window is key while recording; the user is told to press the combination.
+/// Recording runs while the menu-bar dropdown is open, so keys arrive through
+/// a listen-only CGEventTap on the main run loop in common modes: the tap
+/// keeps firing during menu tracking, where local NSEvent monitors never run.
 @MainActor
 enum HotkeyRecorder {
-    fileprivate static var currentSession: RecordingSession?
+    static var currentSession: RecordingSession?
 
     /// Runs a recording session on the main thread.
     /// - Parameter completion: called with (keyCode, modifiers, displayString)
@@ -32,14 +33,13 @@ enum HotkeyRecorder {
         return reserved.contains(keyCode)
     }
 
-    /// Converts AppKit modifier flags to a Carbon modifier mask.
-    static func carbonModifiers(from flags: NSEvent.ModifierFlags) -> UInt32 {
-        let mask = flags.intersection(.deviceIndependentFlagsMask)
+    /// Converts CoreGraphics event flags to a Carbon modifier mask.
+    static func carbonModifiers(from flags: CGEventFlags) -> UInt32 {
         var result: UInt32 = 0
-        if mask.contains(.command) { result |= UInt32(cmdKey) }
-        if mask.contains(.option) { result |= UInt32(optionKey) }
-        if mask.contains(.control) { result |= UInt32(controlKey) }
-        if mask.contains(.shift) { result |= UInt32(shiftKey) }
+        if flags.contains(.maskCommand) { result |= UInt32(cmdKey) }
+        if flags.contains(.maskAlternate) { result |= UInt32(optionKey) }
+        if flags.contains(.maskControl) { result |= UInt32(controlKey) }
+        if flags.contains(.maskShift) { result |= UInt32(shiftKey) }
         return result
     }
 
@@ -114,19 +114,39 @@ enum HotkeyRecorder {
         case kVK_ANSI_Minus: return "-"
         case kVK_ANSI_Equal: return "="
         case kVK_ANSI_Grave: return "`"
+        case kVK_F1: return "F1"
+        case kVK_F2: return "F2"
+        case kVK_F3: return "F3"
+        case kVK_F4: return "F4"
+        case kVK_F5: return "F5"
+        case kVK_F6: return "F6"
+        case kVK_F7: return "F7"
+        case kVK_F8: return "F8"
+        case kVK_F9: return "F9"
+        case kVK_F10: return "F10"
+        case kVK_F11: return "F11"
+        case kVK_F12: return "F12"
+        case kVK_F13: return "F13"
+        case kVK_F14: return "F14"
+        case kVK_F15: return "F15"
+        case kVK_F16: return "F16"
+        case kVK_F17: return "F17"
+        case kVK_F18: return "F18"
+        case kVK_F19: return "F19"
         default: return "Key \(keyCode)"
         }
     }
 }
 
-/// A single recording session: owns the event monitor and ends itself when a
-/// combination is captured, on Escape, or when the app is deactivated.
+/// A single recording session: owns a listen-only event tap and ends itself
+/// when a combination is captured, on Escape, or when the settings menu
+/// closes.
 @MainActor
-private final class RecordingSession {
+final class RecordingSession {
     private let completion: (UInt32?, UInt32?, String) -> Void
-    private var monitor: Any?
+    private var tap: CFMachPort?
+    private var runLoopSource: CFRunLoopSource?
     private var observers: [NSObjectProtocol] = []
-    private var keyWindow: NSWindow?
     private var finished = false
 
     init(completion: @escaping (UInt32?, UInt32?, String) -> Void) {
@@ -134,64 +154,107 @@ private final class RecordingSession {
     }
 
     func start() {
-        keyWindow = NSApp.keyWindow
-        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self else { return event }
-            return self.handle(event)
+        installEndObservers()
+
+        let mask = CGEventMask(1 << CGEventType.keyDown.rawValue)
+        let callback: CGEventTapCallBack = { _, _, event, userInfo in
+            guard let userInfo else { return Unmanaged.passUnretained(event) }
+            let session = Unmanaged<RecordingSession>.fromOpaque(userInfo).takeUnretainedValue()
+            MainActor.assumeIsolated {
+                session.handle(event)
+            }
+            return Unmanaged.passUnretained(event)
         }
+        guard let tap = CGEvent.tapCreate(
+            tap: .cghidEventTap,
+            place: .headInsertEventTap,
+            options: .listenOnly,
+            eventsOfInterest: mask,
+            callback: callback,
+            userInfo: Unmanaged.passUnretained(self).toOpaque()
+        ) else {
+            finish(
+                keyCode: nil,
+                modifiers: nil,
+                reason: "Could not listen for keyboard events; check the Accessibility permission."
+            )
+            return
+        }
+        guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) else {
+            self.tap = tap
+            finish(
+                keyCode: nil,
+                modifiers: nil,
+                reason: "Could not listen for keyboard events."
+            )
+            return
+        }
+        self.tap = tap
+        self.runLoopSource = source
+        CFRunLoopAddSource(RunLoop.main.getCFRunLoop(), source, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
+    }
+
+    /// Observes the events that end the session early: the settings menu
+    /// closing and the app being deactivated. Both notifications are posted
+    /// on the main thread.
+    func installEndObservers() {
         observers.append(NotificationCenter.default.addObserver(
-            forName: NSApplication.didResignActiveNotification,
+            forName: NSMenu.didEndTrackingNotification,
             object: nil,
-            queue: .main
+            queue: nil
         ) { [weak self] _ in
-            Task { @MainActor in
+            MainActor.assumeIsolated {
                 self?.finish(keyCode: nil, modifiers: nil, reason: "Cancelled.")
             }
         })
-        if let keyWindow {
-            observers.append(NotificationCenter.default.addObserver(
-                forName: NSWindow.didResignKeyNotification,
-                object: keyWindow,
-                queue: .main
-            ) { [weak self] _ in
-                Task { @MainActor in
-                    self?.finish(keyCode: nil, modifiers: nil, reason: "Cancelled.")
-                }
-            })
-        }
+        observers.append(NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.finish(keyCode: nil, modifiers: nil, reason: "Cancelled.")
+            }
+        })
     }
 
     func invalidate() {
+        finished = true
         teardown()
     }
 
-    private func handle(_ event: NSEvent) -> NSEvent? {
-        if Int(event.keyCode) == kVK_Escape {
+    /// True while the event tap (or its creation-failure completion) is still
+    /// active; false once the session has torn down.
+    var hasTap: Bool {
+        tap != nil
+    }
+
+    func handle(_ event: CGEvent) {
+        let keyCode = UInt32(event.getIntegerValueField(.keyboardEventKeycode))
+
+        if Int(keyCode) == kVK_Escape {
             finish(keyCode: nil, modifiers: nil, reason: "Cancelled.")
-            return nil
+            return
         }
 
-        let requiredMask: NSEvent.ModifierFlags = [.command, .option, .control]
-        let active = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            .intersection(requiredMask)
-        if active.isEmpty {
-            return event
-        }
+        if isModifierKeyCode(keyCode) { return }
 
-        let modifiers = HotkeyRecorder.carbonModifiers(from: event.modifierFlags)
-        let keyCode = UInt32(event.keyCode)
+        let required: CGEventFlags = [.maskCommand, .maskAlternate, .maskControl]
+        if event.flags.intersection(required).isEmpty { return }
+
+        let modifiers = HotkeyRecorder.carbonModifiers(from: event.flags)
         if HotkeyRecorder.isReservedCombo(keyCode: keyCode, modifiers: modifiers) {
             finish(
                 keyCode: nil,
                 modifiers: nil,
                 reason: "That combination conflicts with a common system shortcut."
             )
-            return event
+            return
         }
 
         let display = HotkeyRecorder.displayString(keyCode: keyCode, modifiers: modifiers)
         finish(keyCode: keyCode, modifiers: modifiers, reason: display)
-        return nil
     }
 
     private func finish(keyCode: UInt32?, modifiers: UInt32?, reason: String) {
@@ -202,15 +265,30 @@ private final class RecordingSession {
     }
 
     private func teardown() {
-        if let monitor { NSEvent.removeMonitor(monitor) }
-        monitor = nil
+        if let runLoopSource {
+            CFRunLoopRemoveSource(RunLoop.main.getCFRunLoop(), runLoopSource, .commonModes)
+        }
+        runLoopSource = nil
+        if let tap {
+            CFMachPortInvalidate(tap)
+        }
+        tap = nil
         for observer in observers {
             NotificationCenter.default.removeObserver(observer)
         }
         observers.removeAll()
-        keyWindow = nil
         if HotkeyRecorder.currentSession === self {
             HotkeyRecorder.currentSession = nil
+        }
+    }
+
+    private func isModifierKeyCode(_ keyCode: UInt32) -> Bool {
+        switch Int(keyCode) {
+        case kVK_Shift, kVK_RightShift, kVK_Command, kVK_RightCommand,
+             kVK_Option, kVK_RightOption, kVK_Control, kVK_RightControl:
+            return true
+        default:
+            return false
         }
     }
 }

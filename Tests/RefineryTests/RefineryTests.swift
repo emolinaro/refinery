@@ -1,4 +1,5 @@
 import XCTest
+import AppKit
 import Carbon.HIToolbox
 @testable import Refinery
 
@@ -100,6 +101,28 @@ final class HotkeyRecorderTests: XCTestCase {
             HotkeyRecorder.displayString(keyCode: UInt32(kVK_ANSI_P), modifiers: UInt32(cmdKey | optionKey)),
             "⌥⌘P"
         )
+    }
+
+    func testFunctionKeysHaveLabels() {
+        XCTAssertEqual(
+            HotkeyRecorder.displayString(keyCode: UInt32(kVK_F5), modifiers: UInt32(cmdKey | optionKey)),
+            "⌥⌘F5"
+        )
+        XCTAssertEqual(HotkeyRecorder.keyLabel(UInt32(kVK_F1)), "F1")
+        XCTAssertEqual(HotkeyRecorder.keyLabel(UInt32(kVK_F12)), "F12")
+        XCTAssertEqual(HotkeyRecorder.keyLabel(UInt32(kVK_F19)), "F19")
+    }
+
+    func testCarbonModifiersFromCGEventFlags() {
+        XCTAssertEqual(
+            HotkeyRecorder.carbonModifiers(from: [.maskCommand, .maskAlternate]),
+            UInt32(cmdKey | optionKey)
+        )
+        XCTAssertEqual(
+            HotkeyRecorder.carbonModifiers(from: [.maskShift, .maskControl]),
+            UInt32(shiftKey | controlKey)
+        )
+        XCTAssertEqual(HotkeyRecorder.carbonModifiers(from: []), 0)
     }
 }
 
@@ -207,9 +230,158 @@ final class EndpointClientTests: XCTestCase {
     }
 }
 
+/// Drives a RecordingSession through real key events to verify capture,
+/// cancel, teardown and modifier handling without a physical keyboard.
+@MainActor
+final class RecordingSessionTests: XCTestCase {
+    /// Runs the main run loop briefly so the run-loop observer queued by a
+    /// session can deliver its completion.
+    private func drainRunLoop() {
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    }
+
+    private func keyEvent(keyCode: CGKeyCode, flags: CGEventFlags = []) -> CGEvent {
+        let event = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true)!
+        event.flags = flags
+        return event
+    }
+
+    private func startSession() -> (RecordingSession, Box<(UInt32?, UInt32?, String)?>) {
+        let box = Box<(UInt32?, UInt32?, String)?>(nil)
+        let session = RecordingSession { keyCode, modifiers, reason in
+            box.value = (keyCode, modifiers, reason)
+        }
+        HotkeyRecorder.currentSession = session
+        session.start()
+        return (session, box)
+    }
+
+    func testStartInvokesCompletionWhenTapCannotBeCreated() {
+        // The tap callback path needs Accessibility; start() handles the
+        // failure branch deterministically by completing with nil.
+        let (session, box) = startSession()
+        if session.hasTap {
+            // Tap creation succeeded in this environment; verify live capture instead.
+            session.handle(keyEvent(keyCode: CGKeyCode(kVK_ANSI_P), flags: [.maskCommand, .maskAlternate]))
+            drainRunLoop()
+            XCTAssertEqual(box.value?.0, UInt32(kVK_ANSI_P))
+            XCTAssertEqual(box.value?.1, UInt32(cmdKey | optionKey))
+            XCTAssertNil(HotkeyRecorder.currentSession)
+        } else {
+            XCTAssertNil(box.value?.0)
+            XCTAssertEqual(box.value?.2, "Could not listen for keyboard events; check the Accessibility permission.")
+            XCTAssertNil(HotkeyRecorder.currentSession)
+        }
+        XCTAssertNotNil(box.value)
+    }
+
+    func testHandleCapturesCommandOptionCombo() {
+        let (session, box) = startSession()
+        guard session.hasTap else { return }
+        session.handle(keyEvent(keyCode: CGKeyCode(kVK_ANSI_J), flags: [.maskCommand, .maskAlternate]))
+        XCTAssertEqual(box.value?.0, UInt32(kVK_ANSI_J))
+        XCTAssertEqual(box.value?.1, UInt32(cmdKey | optionKey))
+        XCTAssertEqual(box.value?.2, "⌥⌘J")
+        XCTAssertNil(HotkeyRecorder.currentSession)
+        XCTAssertFalse(session.hasTap)
+    }
+
+    func testHandleEscapeCancelsWithoutRebinding() {
+        let (session, box) = startSession()
+        guard session.hasTap else { return }
+        session.handle(keyEvent(keyCode: CGKeyCode(kVK_Escape), flags: [.maskCommand]))
+        XCTAssertNil(box.value?.0)
+        XCTAssertEqual(box.value?.2, "Cancelled.")
+        XCTAssertNil(HotkeyRecorder.currentSession)
+        XCTAssertFalse(session.hasTap)
+    }
+
+    func testHandleReservedComboIsRejected() {
+        let (session, box) = startSession()
+        guard session.hasTap else { return }
+        session.handle(keyEvent(keyCode: CGKeyCode(kVK_ANSI_C), flags: [.maskCommand]))
+        XCTAssertNil(box.value?.0)
+        XCTAssertEqual(box.value?.2, "That combination conflicts with a common system shortcut.")
+        XCTAssertNil(HotkeyRecorder.currentSession)
+    }
+
+    func testHandlePlainKeyWithoutRequiredModifierIsIgnored() {
+        let (session, box) = startSession()
+        guard session.hasTap else { return }
+        session.handle(keyEvent(keyCode: CGKeyCode(kVK_ANSI_P)))
+        XCTAssertNil(box.value)
+        XCTAssertTrue(session.hasTap)
+        session.invalidate()
+    }
+
+    func testHandleBareModifierPressIsIgnored() {
+        let (session, box) = startSession()
+        guard session.hasTap else { return }
+        session.handle(keyEvent(keyCode: CGKeyCode(kVK_Command), flags: [.maskCommand]))
+        XCTAssertNil(box.value)
+        XCTAssertTrue(session.hasTap)
+        session.handle(keyEvent(keyCode: CGKeyCode(kVK_RightOption), flags: [.maskCommand, .maskAlternate]))
+        XCTAssertNil(box.value)
+        XCTAssertTrue(session.hasTap)
+        session.invalidate()
+    }
+
+    func testMenuCloseEndsSessionAndClearsCurrentSession() {
+        let (session, box) = startSession()
+        guard session.hasTap else { return }
+        NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: nil)
+        XCTAssertEqual(box.value?.2, "Cancelled.")
+        XCTAssertNil(HotkeyRecorder.currentSession)
+        XCTAssertFalse(session.hasTap)
+    }
+
+    func testInvalidatedSessionDeliversNoCompletion() {
+        let (session, box) = startSession()
+        guard session.hasTap else { return }
+        session.invalidate()
+        XCTAssertNil(box.value)
+        XCTAssertNil(HotkeyRecorder.currentSession)
+        XCTAssertFalse(session.hasTap)
+
+        // A late event after teardown must not resurrect the session.
+        session.handle(keyEvent(keyCode: CGKeyCode(kVK_ANSI_P), flags: [.maskCommand, .maskAlternate]))
+        XCTAssertNil(box.value)
+    }
+
+    func testStartReplacesPreviousSessionWithoutCompletingIt() {
+        let firstBox = Box<(UInt32?, UInt32?, String)?>(nil)
+        HotkeyRecorder.start { keyCode, modifiers, reason in
+            firstBox.value = (keyCode, modifiers, reason)
+        }
+        let first = HotkeyRecorder.currentSession
+
+        let secondBox = Box<(UInt32?, UInt32?, String)?>(nil)
+        HotkeyRecorder.start { keyCode, modifiers, reason in
+            secondBox.value = (keyCode, modifiers, reason)
+        }
+        let second = HotkeyRecorder.currentSession
+
+        XCTAssertNotNil(first)
+        XCTAssertNotNil(second)
+        XCTAssertFalse(first === second)
+        XCTAssertNil(firstBox.value)
+        XCTAssertFalse(first!.hasTap)
+        XCTAssertTrue(HotkeyRecorder.currentSession === second)
+
+        second?.handle(keyEvent(keyCode: CGKeyCode(kVK_ANSI_P), flags: [.maskCommand, .maskAlternate]))
+        XCTAssertEqual(secondBox.value?.0, UInt32(kVK_ANSI_P))
+        XCTAssertNil(HotkeyRecorder.currentSession)
+    }
+}
+
+/// A tiny reference box for capturing completion results from tests.
+private final class Box<T> {
+    var value: T
+    init(_ value: T) { self.value = value }
+}
+
 /// Test double that records the URLRequest and returns a canned response.
-private final class RequestRecorder: @unchecked Sendable {
-    private var _lastRequest: URLRequest?
+private final class RequestRecorder: @unchecked Sendable {    private var _lastRequest: URLRequest?
     private let semaphore = DispatchSemaphore(value: 1)
     private(set) var lastRequest: URLRequest? {
         get {

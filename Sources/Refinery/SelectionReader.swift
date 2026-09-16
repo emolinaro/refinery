@@ -47,11 +47,6 @@ enum SelectionReader {
             }
         }
 
-        // Another fallback: kAXSelectedTextMarkerRange on text marker-based elements.
-        if let selected = stringValue(axElement, kAXSelectedTextMarkerRangeAttribute as CFString) {
-            return selected
-        }
-
         return nil
     }
 
