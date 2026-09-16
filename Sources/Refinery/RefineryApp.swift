@@ -6,10 +6,7 @@ struct RefineryApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        Settings {
-            SettingsView(model: appDelegate.model)
-                .frame(minWidth: 420, minHeight: 480)
-        }
+        Settings { EmptyView() }
     }
 }
 
@@ -24,7 +21,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             E2E.run()
         }
 
-        // The SwiftUI scene hosts the settings window; the menu-bar item is manual.
+        // The menu-bar item (with its embedded settings panel) is the only UI surface.
+        NSApp.setActivationPolicy(.accessory)
+
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.image = NSImage(systemSymbolName: "wand.and.stars", accessibilityDescription: "Refinery")
         item.button?.image?.size = NSSize(width: 18, height: 18)

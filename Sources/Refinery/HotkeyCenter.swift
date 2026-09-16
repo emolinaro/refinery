@@ -51,20 +51,6 @@ final class HotkeyCenter {
         return true
     }
 
-    /// Removes the current registration, if any.
-    func unregister() {
-        if let eventHandler {
-            RemoveEventHandler(eventHandler)
-            self.eventHandler = nil
-        }
-        if let hotkeyRef {
-            UnregisterEventHotKey(hotkeyRef)
-            self.hotkeyRef = nil
-        }
-        currentKeyCode = 0
-        currentModifiers = 0
-    }
-
     /// Fires the trigger on the main thread.
     private func fire() {
         onTrigger?()
