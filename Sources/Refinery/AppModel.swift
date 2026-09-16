@@ -51,9 +51,25 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Registers a newly recorded hotkey, keeping the previous registration
+    /// and persisted settings when the new combination cannot be registered.
+    @discardableResult
+    func adoptHotkey(keyCode: Int, modifiers: Int) -> Bool {
+        let ok = hotkeyCenter.register(keyCode: UInt32(keyCode), modifiers: UInt32(modifiers))
+        if ok {
+            update {
+                $0.hotkeyKeyCode = keyCode
+                $0.hotkeyModifiers = modifiers
+            }
+        } else {
+            lastOutcome = .failure("Could not register hotkey; it may be in use by another app.")
+        }
+        return ok
+    }
+
     // MARK: The pipeline
     func handleHotkey() {
-        guard !isRunning else { return }
+        guard !isRunning, NSApp.modalWindow == nil else { return }
 
         guard SelectionReader.isAccessibilityEnabled() else {
             lastOutcome = .failure("Accessibility permission is required to read the selected text.")

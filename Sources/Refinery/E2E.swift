@@ -5,8 +5,7 @@ import SwiftUI
 /// with environment overrides (base URL, model, preset, dummy key), then runs
 /// the same request/parse path the menu bar uses, writing the result to the
 /// clipboard. The accessibility-selection read is not exercised here (the
-/// input text comes from `E2E_INPUT`); the hotkey -> selection path is covered
-/// by the manual evidence pass in RUN NOTES.
+/// input text comes from `E2E_INPUT`).
 @MainActor
 enum E2E {
     static func run() -> Never {

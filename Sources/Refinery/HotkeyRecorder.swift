@@ -21,15 +21,12 @@ enum HotkeyRecorder {
     }
 
     /// True for combinations that would intercept universal shortcuts like
-    /// copy, paste, cut, undo, select-all, save, print, space or tab.
+    /// copy, paste, cut, undo, select-all, space or tab.
     static func isReservedCombo(keyCode: UInt32, modifiers: UInt32) -> Bool {
         guard modifiers & UInt32(cmdKey) != 0 else { return false }
         let reserved: Set<UInt32> = [
             UInt32(kVK_ANSI_C), UInt32(kVK_ANSI_V), UInt32(kVK_ANSI_X),
-            UInt32(kVK_ANSI_Z), UInt32(kVK_ANSI_A), UInt32(kVK_ANSI_S),
-            UInt32(kVK_ANSI_P), UInt32(kVK_ANSI_N), UInt32(kVK_ANSI_O),
-            UInt32(kVK_ANSI_W), UInt32(kVK_ANSI_Q), UInt32(kVK_ANSI_M),
-            UInt32(kVK_ANSI_F), UInt32(kVK_ANSI_H), UInt32(kVK_Space),
+            UInt32(kVK_ANSI_Z), UInt32(kVK_ANSI_A), UInt32(kVK_Space),
             UInt32(kVK_Tab),
         ]
         return reserved.contains(keyCode)

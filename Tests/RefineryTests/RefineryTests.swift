@@ -1,4 +1,5 @@
 import XCTest
+import Carbon.HIToolbox
 @testable import Refinery
 
 final class PresetPromptBuilderTests: XCTestCase {
@@ -54,6 +55,51 @@ final class PresetPromptBuilderTests: XCTestCase {
         XCTAssertTrue(prompt.contains("Danish"))
         XCTAssertTrue(prompt.contains("English"))
         XCTAssertTrue(prompt.contains("Never translate"))
+    }
+}
+
+@MainActor
+final class HotkeyRecorderTests: XCTestCase {
+    func testDefaultHotkeyComboIsAccepted() {
+        let defaultModifiers = UInt32(cmdKey | optionKey)
+        XCTAssertFalse(
+            HotkeyRecorder.isReservedCombo(keyCode: UInt32(kVK_ANSI_P), modifiers: defaultModifiers),
+            "the documented default hotkey Opt+Cmd+P must be recordable"
+        )
+    }
+
+    func testUniversalShortcutCombosAreRejected() {
+        let combos: [(UInt32, String)] = [
+            (UInt32(kVK_ANSI_C), "Cmd+C"),
+            (UInt32(kVK_ANSI_V), "Cmd+V"),
+            (UInt32(kVK_ANSI_X), "Cmd+X"),
+            (UInt32(kVK_ANSI_Z), "Cmd+Z"),
+            (UInt32(kVK_ANSI_A), "Cmd+A"),
+            (UInt32(kVK_Space), "Cmd+Space"),
+            (UInt32(kVK_Tab), "Cmd+Tab"),
+        ]
+        for (keyCode, name) in combos {
+            XCTAssertTrue(
+                HotkeyRecorder.isReservedCombo(keyCode: keyCode, modifiers: UInt32(cmdKey)),
+                "\(name) must be rejected as a recorded hotkey"
+            )
+        }
+    }
+
+    func testNonCommandCombosPassThrough() {
+        XCTAssertFalse(
+            HotkeyRecorder.isReservedCombo(keyCode: UInt32(kVK_ANSI_C), modifiers: UInt32(optionKey))
+        )
+        XCTAssertFalse(
+            HotkeyRecorder.isReservedCombo(keyCode: UInt32(kVK_ANSI_V), modifiers: UInt32(controlKey))
+        )
+    }
+
+    func testDisplayStringForDefaultHotkey() {
+        XCTAssertEqual(
+            HotkeyRecorder.displayString(keyCode: UInt32(kVK_ANSI_P), modifiers: UInt32(cmdKey | optionKey)),
+            "⌥⌘P"
+        )
     }
 }
 

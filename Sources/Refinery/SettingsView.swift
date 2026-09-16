@@ -58,12 +58,11 @@ struct SettingsView: View {
                         HotkeyRecorder.start { keyCode, modifiers, display in
                             recordingHotkey = false
                             if let keyCode, let modifiers {
-                                model.update {
-                                    $0.hotkeyKeyCode = Int(keyCode)
-                                    $0.hotkeyModifiers = Int(modifiers)
+                                if model.adoptHotkey(keyCode: Int(keyCode), modifiers: Int(modifiers)) {
+                                    hotkeyFeedback = "Hotkey set to \(display)"
+                                } else {
+                                    hotkeyFeedback = "Could not set \(display); the previous hotkey is kept."
                                 }
-                                model.applyHotkey()
-                                hotkeyFeedback = "Hotkey set to \(display)"
                             } else {
                                 hotkeyFeedback = display
                             }

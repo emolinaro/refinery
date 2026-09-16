@@ -1,10 +1,11 @@
 #!/bin/bash
 # End-to-end smoke test for the Refinery menu-bar app.
 #
-# Verifies the non-UI core of the hotkey pipeline without a real endpoint:
-# reads the frontmost app's selection via the Accessibility API, runs the
-# preset prompt construction, talks to a local mock OpenAI-compatible server,
-# and writes the polished result to the clipboard.
+# Verifies the non-UI core of the polish pipeline without a real endpoint:
+# preset prompt construction, the request/parse path against a local mock
+# OpenAI-compatible server, and writing the polished result to the clipboard.
+# The accessibility-selection read is not exercised (input comes from
+# E2E_INPUT).
 #
 # Usage: ./Scripts/e2e-smoke.sh [preset-name] [custom-prompt]
 set -euo pipefail
