@@ -55,13 +55,6 @@ final class AppModel: ObservableObject {
     func handleHotkey() {
         guard !isRunning else { return }
 
-        // Custom preset requires a typed prompt; the panel returns nil when cancelled.
-        var customPrompt: String?
-        if settings.preset == .customOneOff {
-            guard let typed = CustomPromptPanel.prompt(), !typed.isEmpty else { return }
-            customPrompt = typed
-        }
-
         guard SelectionReader.isAccessibilityEnabled() else {
             lastOutcome = .failure("Accessibility permission is required to read the selected text.")
             SelectionReader.promptForAccessibility()
@@ -72,6 +65,13 @@ final class AppModel: ObservableObject {
               !selected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             lastOutcome = .emptySelection
             return
+        }
+
+        // Custom preset requires a typed prompt; the panel returns nil when cancelled.
+        var customPrompt: String?
+        if settings.preset == .customOneOff {
+            guard let typed = CustomPromptPanel.prompt(), !typed.isEmpty else { return }
+            customPrompt = typed
         }
 
         guard let url = baseURL, let scheme = url.scheme?.lowercased(),
@@ -85,21 +85,16 @@ final class AppModel: ObservableObject {
             return
         }
 
-        var base = settings.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        while base.hasSuffix("/") { base.removeLast() }
-        guard let normalized = URL(string: base) else { return }
-
         isRunning = true
         let preset = settings.preset
         let model = settings.model
         let selectedText = selected
-        let normalizedBase = normalized
         let custom = customPrompt
         let apiKey = key
         Task { @MainActor in
             do {
                 let result = try await run(
-                    baseURL: normalizedBase,
+                    baseURL: url,
                     model: model,
                     text: selectedText,
                     preset: preset,

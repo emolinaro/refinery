@@ -92,9 +92,6 @@ final class HotkeyCenter {
         currentModifiers = 0
     }
 
-    /// True while a hotkey is registered.
-    var isRegistered: Bool { hotkeyRef != nil }
-
     /// Fires the trigger on the main thread.
     private func fire() {
         onTrigger?()

@@ -56,7 +56,6 @@ struct MenuBarView: View {
             Button("Quit Refinery") {
                 NSApplication.shared.terminate(nil)
             }
-            .keyboardShortcut("q")
         }
         .frame(minWidth: 260)
         .padding(EdgeInsets(top: 10, leading: 12, bottom: 8, trailing: 12))

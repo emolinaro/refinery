@@ -64,16 +64,6 @@ enum KeychainStore {
         return String(data: data, encoding: .utf8)
     }
 
-    /// Deletes the saved API key, if present.
-    static func deleteAPIKey() {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: "default",
-        ]
-        SecItemDelete(query as CFDictionary)
-    }
-
     /// True when a key is saved.
     static func hasAPIKey() -> Bool {
         readAPIKey() != nil

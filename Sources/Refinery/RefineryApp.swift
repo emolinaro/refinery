@@ -4,18 +4,18 @@ import SwiftUI
 @main
 struct RefineryApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var model = AppModel()
 
     var body: some Scene {
         Settings {
-            SettingsView(model: model)
+            SettingsView(model: appDelegate.model)
                 .frame(minWidth: 420, minHeight: 480)
         }
     }
 }
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var model: AppModel?
+    let model = AppModel()
     private var statusItem: NSStatusItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -25,9 +25,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // The SwiftUI scene hosts the settings window; the menu-bar item is manual.
-        let model = AppModel()
-        self.model = model
-
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.image = NSImage(systemSymbolName: "wand.and.stars", accessibilityDescription: "Refinery")
         item.button?.image?.size = NSSize(width: 18, height: 18)
@@ -44,6 +41,5 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.setTrigger { [weak model] in
             model?.handleHotkey()
         }
-        model.applyHotkey()
     }
 }

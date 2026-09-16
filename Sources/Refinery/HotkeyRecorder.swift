@@ -6,30 +6,33 @@ import SwiftUI
 ///
 /// A local event monitor (not a global one) is enough because the settings
 /// window is key while recording; the user is told to press the combination.
+@MainActor
 enum HotkeyRecorder {
+    fileprivate static var currentSession: RecordingSession?
+
     /// Runs a recording session on the main thread.
     /// - Parameter completion: called with (keyCode, modifiers, displayString)
     ///   on success, or (nil, nil, reason) when recording was cancelled.
     static func start(completion: @escaping (UInt32?, UInt32?, String) -> Void) {
-        var monitor: Any?
-        let closure: (NSEvent) -> NSEvent? = { event in
-            guard event.type == .keyDown else { return event }
-            if let monitor { NSEvent.removeMonitor(monitor) }
-            let modifiers = carbonModifiers(from: event.modifierFlags)
-            let keyCode = UInt32(event.keyCode)
-            // Require at least one modifier other than shift.
-            let requiredMask: NSEvent.ModifierFlags = [.command, .option, .control]
-            let active = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-                .intersection(requiredMask)
-            if active.isEmpty {
-                completion(nil, nil, "Include ⌘, ⌥ or ⌃ in the shortcut.")
-                return nil
-            }
-            let display = displayString(keyCode: keyCode, modifiers: modifiers)
-            completion(keyCode, modifiers, display)
-            return nil
-        }
-        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: closure)
+        currentSession?.invalidate()
+        let session = RecordingSession(completion: completion)
+        currentSession = session
+        session.start()
+    }
+
+    /// True for combinations that would intercept universal shortcuts like
+    /// copy, paste, cut, undo, select-all, save, print, space or tab.
+    static func isReservedCombo(keyCode: UInt32, modifiers: UInt32) -> Bool {
+        guard modifiers & UInt32(cmdKey) != 0 else { return false }
+        let reserved: Set<UInt32> = [
+            UInt32(kVK_ANSI_C), UInt32(kVK_ANSI_V), UInt32(kVK_ANSI_X),
+            UInt32(kVK_ANSI_Z), UInt32(kVK_ANSI_A), UInt32(kVK_ANSI_S),
+            UInt32(kVK_ANSI_P), UInt32(kVK_ANSI_N), UInt32(kVK_ANSI_O),
+            UInt32(kVK_ANSI_W), UInt32(kVK_ANSI_Q), UInt32(kVK_ANSI_M),
+            UInt32(kVK_ANSI_F), UInt32(kVK_ANSI_H), UInt32(kVK_Space),
+            UInt32(kVK_Tab),
+        ]
+        return reserved.contains(keyCode)
     }
 
     /// Converts AppKit modifier flags to a Carbon modifier mask.
@@ -115,6 +118,102 @@ enum HotkeyRecorder {
         case kVK_ANSI_Equal: return "="
         case kVK_ANSI_Grave: return "`"
         default: return "Key \(keyCode)"
+        }
+    }
+}
+
+/// A single recording session: owns the event monitor and ends itself when a
+/// combination is captured, on Escape, or when the app is deactivated.
+@MainActor
+private final class RecordingSession {
+    private let completion: (UInt32?, UInt32?, String) -> Void
+    private var monitor: Any?
+    private var observers: [NSObjectProtocol] = []
+    private var keyWindow: NSWindow?
+    private var finished = false
+
+    init(completion: @escaping (UInt32?, UInt32?, String) -> Void) {
+        self.completion = completion
+    }
+
+    func start() {
+        keyWindow = NSApp.keyWindow
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            return self.handle(event)
+        }
+        observers.append(NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.finish(keyCode: nil, modifiers: nil, reason: "Cancelled.")
+            }
+        })
+        if let keyWindow {
+            observers.append(NotificationCenter.default.addObserver(
+                forName: NSWindow.didResignKeyNotification,
+                object: keyWindow,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    self?.finish(keyCode: nil, modifiers: nil, reason: "Cancelled.")
+                }
+            })
+        }
+    }
+
+    func invalidate() {
+        teardown()
+    }
+
+    private func handle(_ event: NSEvent) -> NSEvent? {
+        if Int(event.keyCode) == kVK_Escape {
+            finish(keyCode: nil, modifiers: nil, reason: "Cancelled.")
+            return nil
+        }
+
+        let requiredMask: NSEvent.ModifierFlags = [.command, .option, .control]
+        let active = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            .intersection(requiredMask)
+        if active.isEmpty {
+            return event
+        }
+
+        let modifiers = HotkeyRecorder.carbonModifiers(from: event.modifierFlags)
+        let keyCode = UInt32(event.keyCode)
+        if HotkeyRecorder.isReservedCombo(keyCode: keyCode, modifiers: modifiers) {
+            finish(
+                keyCode: nil,
+                modifiers: nil,
+                reason: "That combination conflicts with a common system shortcut."
+            )
+            return event
+        }
+
+        let display = HotkeyRecorder.displayString(keyCode: keyCode, modifiers: modifiers)
+        finish(keyCode: keyCode, modifiers: modifiers, reason: display)
+        return nil
+    }
+
+    private func finish(keyCode: UInt32?, modifiers: UInt32?, reason: String) {
+        guard !finished else { return }
+        finished = true
+        teardown()
+        completion(keyCode, modifiers, reason)
+    }
+
+    private func teardown() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+        for observer in observers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        observers.removeAll()
+        keyWindow = nil
+        if HotkeyRecorder.currentSession === self {
+            HotkeyRecorder.currentSession = nil
         }
     }
 }

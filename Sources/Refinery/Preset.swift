@@ -29,24 +29,6 @@ enum Preset: String, CaseIterable, Identifiable, Codable {
         case .customOneOff: return "Custom…"
         }
     }
-
-    /// One-line description shown in the settings preset picker.
-    var detail: String {
-        switch self {
-        case .polish:
-            return "Fix grammar, spelling and clarity. Keep meaning, tone and language."
-        case .concise:
-            return "Same message, fewer words."
-        case .formal:
-            return "Neutral, professional register."
-        case .friendlyEmail:
-            return "Warm, conversational email tone."
-        case .languageAware:
-            return "Auto-detect Danish or English and polish in that language."
-        case .customOneOff:
-            return "Type a one-off instruction; applies to this run only."
-        }
-    }
 }
 
 /// Builds the chat messages sent to the OpenAI-compatible endpoint for a preset.

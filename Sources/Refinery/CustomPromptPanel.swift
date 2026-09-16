@@ -12,7 +12,7 @@ enum CustomPromptPanel {
     static func prompt() -> String? {
         let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 420, height: 150),
-            styleMask: [.titled, .closable, .utilityWindow],
+            styleMask: [.titled, .utilityWindow],
             backing: .buffered,
             defer: false
         )
@@ -68,6 +68,7 @@ enum CustomPromptPanel {
                 HStack {
                     Spacer()
                     Button("Cancel", action: host.cancel)
+                        .keyboardShortcut(.cancelAction)
                     Button("Polish", action: host.commit)
                         .keyboardShortcut(.defaultAction)
                 }

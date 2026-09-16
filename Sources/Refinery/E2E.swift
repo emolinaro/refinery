@@ -22,8 +22,7 @@ enum E2E {
         let apiKey = env["E2E_DUMMY_KEY"] ?? "dummy-key-for-tests"
         let timeout = TimeInterval(env["E2E_TIMEOUT"] ?? "5") ?? 5
 
-        var base = settings.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        while base.hasSuffix("/") { base.removeLast() }
+        let base = settings.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let normalized = URL(string: base) else {
             print("E2E ERROR: invalid base URL \(settings.baseURL)")
             exit(2)

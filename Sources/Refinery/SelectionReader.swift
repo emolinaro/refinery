@@ -34,18 +34,11 @@ enum SelectionReader {
             if valueResult == .success, let value,
                AXUIElementGetTypeID() != CFGetTypeID(value) {
                 if let text = value as? String {
-                    if range.length == 0 {
-                        // Some apps report an empty selected range; treat the full value as selected.
-                        return text.isEmpty ? nil : text
-                    }
                     let nsRange = NSRange(location: range.location, length: range.length)
                     if let fastRange = Range(nsRange, in: text) {
                         return String(text[fastRange])
                     }
                 } else if let attributed = value as? NSAttributedString {
-                    if range.length == 0 {
-                        return attributed.string.isEmpty ? nil : attributed.string
-                    }
                     let nsRange = NSRange(location: range.location, length: range.length)
                     if let fastRange = Range(nsRange, in: attributed.string) {
                         return String(attributed.string[fastRange])

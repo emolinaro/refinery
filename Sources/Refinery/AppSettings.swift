@@ -13,13 +13,9 @@ struct AppSettings: Codable, Equatable {
     /// Recorded global hotkey, as a Carbon virtual keycode (35 = "P").
     var hotkeyKeyCode: Int = 35
     /// Recorded modifier flags, as raw Carbon modifier mask (cmdKey | optionKey).
-    var hotkeyModifiers: Int = 4608
+    var hotkeyModifiers: Int = 2304
 
     static let defaultsKey = "com.refinery.app.settings"
-    /// Default hotkey: ⌥⌘P.
-    static let defaultHotkeyKeyCode = 35
-    /// Carbon modifier mask: cmdKey (256) | optionKey (2048).
-    static let defaultHotkeyModifiers = 4608
 
     static func load() -> AppSettings {
         let fallback = AppSettings(

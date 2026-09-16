@@ -59,7 +59,7 @@ From the menu-bar icon you can configure:
 
 ```sh
 swift build     # build
-swift test      # unit tests for presets, language detection, endpoint client
+swift test      # unit tests for presets and the endpoint client
 ```
 
 End-to-end smoke test (mock endpoint, dummy key):

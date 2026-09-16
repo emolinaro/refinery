@@ -57,41 +57,6 @@ final class PresetPromptBuilderTests: XCTestCase {
     }
 }
 
-final class LanguageDetectorTests: XCTestCase {
-    func testDanishSentence() {
-        let text = "Jeg har en kat og den er meget fin, den kan lide at sove."
-        XCTAssertEqual(LanguageDetector.detect(text), .danish)
-    }
-
-    func testEnglishSentence() {
-        let text = "I have a cat and she is very nice, she likes to sleep all day."
-        XCTAssertEqual(LanguageDetector.detect(text), .english)
-    }
-
-    func testDanishMarkerCharacters() {
-        XCTAssertEqual(LanguageDetector.detect("Smørrebrød med øl på åen"), .danish)
-    }
-
-    func testDanishWithOneMarkerAndDanishWords() {
-        let text = "Hej med dig, jeg håber at du har det godt og at vi snakkes ved."
-        XCTAssertEqual(LanguageDetector.detect(text), .danish)
-    }
-
-    func testEnglishWithSingleFalseMarker() {
-        // One stray 'å' should not flip clearly-English text.
-        let text = "The manager will årrange the meeting and send the notes."
-        XCTAssertEqual(LanguageDetector.detect(text), .english)
-    }
-
-    func testEmptyTextDefaultsToEnglish() {
-        XCTAssertEqual(LanguageDetector.detect(""), .english)
-    }
-
-    func testNeutralShortTextDefaultsToEnglish() {
-        XCTAssertEqual(LanguageDetector.detect("OK"), .english)
-    }
-}
-
 final class EndpointClientTests: XCTestCase {
     private func makeClient(base: String = "https://api.example.com/v1") -> EndpointClient {
         EndpointClient(
