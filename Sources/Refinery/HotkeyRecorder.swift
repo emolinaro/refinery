@@ -151,11 +151,10 @@ final class RecordingSession {
 
     init(completion: @escaping (UInt32?, UInt32?, String) -> Void) {
         self.completion = completion
+        installEndObservers()
     }
 
     func start() {
-        installEndObservers()
-
         let mask = CGEventMask(1 << CGEventType.keyDown.rawValue)
         let callback: CGEventTapCallBack = { _, _, event, userInfo in
             guard let userInfo else { return Unmanaged.passUnretained(event) }
@@ -198,7 +197,7 @@ final class RecordingSession {
     /// Observes the events that end the session early: the settings menu
     /// closing and the app being deactivated. Both notifications are posted
     /// on the main thread.
-    func installEndObservers() {
+    private func installEndObservers() {
         observers.append(NotificationCenter.default.addObserver(
             forName: NSMenu.didEndTrackingNotification,
             object: nil,

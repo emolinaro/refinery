@@ -232,73 +232,72 @@ final class EndpointClientTests: XCTestCase {
 
 /// Drives a RecordingSession through real key events to verify capture,
 /// cancel, teardown and modifier handling without a physical keyboard.
+///
+/// Each test builds its session directly via `makeSession`, so every
+/// assertion runs regardless of whether the test host can create the HID
+/// event tap; the tap-creation-failure branch of `start()` is covered
+/// separately in `testStartInvokesCompletionWhenTapCannotBeCreated`.
 @MainActor
 final class RecordingSessionTests: XCTestCase {
-    /// Runs the main run loop briefly so the run-loop observer queued by a
-    /// session can deliver its completion.
-    private func drainRunLoop() {
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-    }
-
     private func keyEvent(keyCode: CGKeyCode, flags: CGEventFlags = []) -> CGEvent {
         let event = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true)!
         event.flags = flags
         return event
     }
 
-    private func startSession() -> (RecordingSession, Box<(UInt32?, UInt32?, String)?>) {
+    /// A session installed as current without running `start()`, so the
+    /// tests never depend on CGEvent.tapCreate succeeding in the test host.
+    private func makeSession() -> (session: RecordingSession, box: Box<(UInt32?, UInt32?, String)?>) {
         let box = Box<(UInt32?, UInt32?, String)?>(nil)
         let session = RecordingSession { keyCode, modifiers, reason in
             box.value = (keyCode, modifiers, reason)
         }
         HotkeyRecorder.currentSession = session
-        session.start()
         return (session, box)
     }
 
     func testStartInvokesCompletionWhenTapCannotBeCreated() {
         // The tap callback path needs Accessibility; start() handles the
         // failure branch deterministically by completing with nil.
-        let (session, box) = startSession()
-        if session.hasTap {
-            // Tap creation succeeded in this environment; verify live capture instead.
-            session.handle(keyEvent(keyCode: CGKeyCode(kVK_ANSI_P), flags: [.maskCommand, .maskAlternate]))
-            drainRunLoop()
-            XCTAssertEqual(box.value?.0, UInt32(kVK_ANSI_P))
-            XCTAssertEqual(box.value?.1, UInt32(cmdKey | optionKey))
-            XCTAssertNil(HotkeyRecorder.currentSession)
-        } else {
+        let box = Box<(UInt32?, UInt32?, String)?>(nil)
+        HotkeyRecorder.start { keyCode, modifiers, reason in
+            box.value = (keyCode, modifiers, reason)
+        }
+        if HotkeyRecorder.currentSession == nil {
+            // Tap creation failed in this environment: start() must have
+            // completed synchronously with the permission failure.
             XCTAssertNil(box.value?.0)
             XCTAssertEqual(box.value?.2, "Could not listen for keyboard events; check the Accessibility permission.")
+        } else {
+            // Tap creation succeeded in this environment; the session stays
+            // current until a combination is captured.
+            HotkeyRecorder.currentSession?.handle(keyEvent(keyCode: CGKeyCode(kVK_ANSI_P), flags: [.maskCommand, .maskAlternate]))
+            XCTAssertEqual(box.value?.0, UInt32(kVK_ANSI_P))
+            XCTAssertEqual(box.value?.1, UInt32(cmdKey | optionKey))
             XCTAssertNil(HotkeyRecorder.currentSession)
         }
         XCTAssertNotNil(box.value)
     }
 
     func testHandleCapturesCommandOptionCombo() {
-        let (session, box) = startSession()
-        guard session.hasTap else { return }
+        let (session, box) = makeSession()
         session.handle(keyEvent(keyCode: CGKeyCode(kVK_ANSI_J), flags: [.maskCommand, .maskAlternate]))
         XCTAssertEqual(box.value?.0, UInt32(kVK_ANSI_J))
         XCTAssertEqual(box.value?.1, UInt32(cmdKey | optionKey))
         XCTAssertEqual(box.value?.2, "⌥⌘J")
         XCTAssertNil(HotkeyRecorder.currentSession)
-        XCTAssertFalse(session.hasTap)
     }
 
     func testHandleEscapeCancelsWithoutRebinding() {
-        let (session, box) = startSession()
-        guard session.hasTap else { return }
+        let (session, box) = makeSession()
         session.handle(keyEvent(keyCode: CGKeyCode(kVK_Escape), flags: [.maskCommand]))
         XCTAssertNil(box.value?.0)
         XCTAssertEqual(box.value?.2, "Cancelled.")
         XCTAssertNil(HotkeyRecorder.currentSession)
-        XCTAssertFalse(session.hasTap)
     }
 
     func testHandleReservedComboIsRejected() {
-        let (session, box) = startSession()
-        guard session.hasTap else { return }
+        let (session, box) = makeSession()
         session.handle(keyEvent(keyCode: CGKeyCode(kVK_ANSI_C), flags: [.maskCommand]))
         XCTAssertNil(box.value?.0)
         XCTAssertEqual(box.value?.2, "That combination conflicts with a common system shortcut.")
@@ -306,42 +305,36 @@ final class RecordingSessionTests: XCTestCase {
     }
 
     func testHandlePlainKeyWithoutRequiredModifierIsIgnored() {
-        let (session, box) = startSession()
-        guard session.hasTap else { return }
+        let (session, box) = makeSession()
         session.handle(keyEvent(keyCode: CGKeyCode(kVK_ANSI_P)))
         XCTAssertNil(box.value)
-        XCTAssertTrue(session.hasTap)
+        XCTAssertTrue(HotkeyRecorder.currentSession === session)
         session.invalidate()
     }
 
     func testHandleBareModifierPressIsIgnored() {
-        let (session, box) = startSession()
-        guard session.hasTap else { return }
+        let (session, box) = makeSession()
         session.handle(keyEvent(keyCode: CGKeyCode(kVK_Command), flags: [.maskCommand]))
         XCTAssertNil(box.value)
-        XCTAssertTrue(session.hasTap)
+        XCTAssertTrue(HotkeyRecorder.currentSession === session)
         session.handle(keyEvent(keyCode: CGKeyCode(kVK_RightOption), flags: [.maskCommand, .maskAlternate]))
         XCTAssertNil(box.value)
-        XCTAssertTrue(session.hasTap)
+        XCTAssertTrue(HotkeyRecorder.currentSession === session)
         session.invalidate()
     }
 
     func testMenuCloseEndsSessionAndClearsCurrentSession() {
-        let (session, box) = startSession()
-        guard session.hasTap else { return }
+        let (session, box) = makeSession()
         NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: nil)
         XCTAssertEqual(box.value?.2, "Cancelled.")
         XCTAssertNil(HotkeyRecorder.currentSession)
-        XCTAssertFalse(session.hasTap)
     }
 
     func testInvalidatedSessionDeliversNoCompletion() {
-        let (session, box) = startSession()
-        guard session.hasTap else { return }
+        let (session, box) = makeSession()
         session.invalidate()
         XCTAssertNil(box.value)
         XCTAssertNil(HotkeyRecorder.currentSession)
-        XCTAssertFalse(session.hasTap)
 
         // A late event after teardown must not resurrect the session.
         session.handle(keyEvent(keyCode: CGKeyCode(kVK_ANSI_P), flags: [.maskCommand, .maskAlternate]))
@@ -349,11 +342,7 @@ final class RecordingSessionTests: XCTestCase {
     }
 
     func testStartReplacesPreviousSessionWithoutCompletingIt() {
-        let firstBox = Box<(UInt32?, UInt32?, String)?>(nil)
-        HotkeyRecorder.start { keyCode, modifiers, reason in
-            firstBox.value = (keyCode, modifiers, reason)
-        }
-        let first = HotkeyRecorder.currentSession
+        let (first, firstBox) = makeSession()
 
         let secondBox = Box<(UInt32?, UInt32?, String)?>(nil)
         HotkeyRecorder.start { keyCode, modifiers, reason in
@@ -361,16 +350,21 @@ final class RecordingSessionTests: XCTestCase {
         }
         let second = HotkeyRecorder.currentSession
 
-        XCTAssertNotNil(first)
-        XCTAssertNotNil(second)
-        XCTAssertFalse(first === second)
+        // The previous session is invalidated, never completed.
         XCTAssertNil(firstBox.value)
-        XCTAssertFalse(first!.hasTap)
-        XCTAssertTrue(HotkeyRecorder.currentSession === second)
+        XCTAssertFalse(HotkeyRecorder.currentSession === first)
 
-        second?.handle(keyEvent(keyCode: CGKeyCode(kVK_ANSI_P), flags: [.maskCommand, .maskAlternate]))
-        XCTAssertEqual(secondBox.value?.0, UInt32(kVK_ANSI_P))
-        XCTAssertNil(HotkeyRecorder.currentSession)
+        if let second {
+            // Tap creation succeeded: the new session is current and captures.
+            XCTAssertFalse(second === first)
+            second.handle(keyEvent(keyCode: CGKeyCode(kVK_ANSI_P), flags: [.maskCommand, .maskAlternate]))
+            XCTAssertEqual(secondBox.value?.0, UInt32(kVK_ANSI_P))
+            XCTAssertNil(HotkeyRecorder.currentSession)
+        } else {
+            // Tap creation failed: the new session completed with nil.
+            XCTAssertNotNil(secondBox.value)
+            XCTAssertNil(secondBox.value?.0)
+        }
     }
 }
 
