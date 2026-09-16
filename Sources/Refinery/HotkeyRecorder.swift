@@ -223,12 +223,6 @@ final class RecordingSession {
         teardown()
     }
 
-    /// True while the event tap (or its creation-failure completion) is still
-    /// active; false once the session has torn down.
-    var hasTap: Bool {
-        tap != nil
-    }
-
     func handle(_ event: CGEvent) {
         let keyCode = UInt32(event.getIntegerValueField(.keyboardEventKeycode))
 
