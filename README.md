@@ -25,7 +25,7 @@ Six presets, picked from the menu-bar icon:
 ## Requirements
 
 - macOS 13 or later
-- Xcode command-line tools (Swift 6 toolchain)
+- Xcode command-line tools (Swift 6.1 or later)
 
 ## Building and running
 

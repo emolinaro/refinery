@@ -71,9 +71,6 @@ struct SettingsView: View {
             } label: {
                 Text("Hotkey")
             }
-            Text("Current: \(recordedHotkeyLabel)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
             if let hotkeyFeedback {
                 Text(hotkeyFeedback)
                     .font(.caption)
