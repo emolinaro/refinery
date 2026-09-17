@@ -1,8 +1,11 @@
 import SwiftUI
 
-/// The menu-bar UI: preset picker, status, settings, quit.
+/// The menu-bar dropdown: status, preset picker, and a Settings button that
+/// opens the settings surface (text entry cannot work inside menu-tracked
+/// views, so settings live in a popover outside the menu).
 public struct MenuBarView: View {
     @ObservedObject var model: AppModel
+    var onOpenSettings: () -> Void
 
     @ViewBuilder
     private var statusLine: some View {
@@ -20,8 +23,9 @@ public struct MenuBarView: View {
         }
     }
 
-    public init(model: AppModel) {
+    public init(model: AppModel, onOpenSettings: @escaping () -> Void) {
         self.model = model
+        self.onOpenSettings = onOpenSettings
     }
 
     public var body: some View {
@@ -55,7 +59,9 @@ public struct MenuBarView: View {
 
             Divider()
 
-            SettingsView(model: model)
+            Button("Settings…") {
+                onOpenSettings()
+            }
 
             Divider()
 

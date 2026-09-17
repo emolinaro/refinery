@@ -1,8 +1,9 @@
 import SwiftUI
 
-/// Settings UI reachable from the menu-bar icon: endpoint URL, model, API key,
-/// and hotkey recording.
-struct SettingsView: View {
+/// Settings UI shown in a popover or window: endpoint URL, model, API key,
+/// and hotkey recording. Text entry requires a surface outside NSMenu
+/// tracking, which steals keyboard focus from menu-item views.
+public struct SettingsView: View {
     @ObservedObject var model: AppModel
 
     @State private var draftBaseURL = ""
@@ -11,7 +12,11 @@ struct SettingsView: View {
     @State private var recordingHotkey = false
     @State private var hotkeyFeedback: String?
 
-    var body: some View {
+    public init(model: AppModel) {
+        self.model = model
+    }
+
+    public var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Endpoint")
                 .font(.headline)
