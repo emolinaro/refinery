@@ -97,6 +97,8 @@ enum KeychainStore {
         if path.isEmpty {
             path = "/"
         }
-        return "\(scheme)://\(endpointHost):\(baseURL.port ?? defaultPort)\(path)"
+        let query = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)?.percentEncodedQuery
+            .map { "?\($0)" } ?? ""
+        return "\(scheme)://\(endpointHost):\(baseURL.port ?? defaultPort)\(path)\(query)"
     }
 }

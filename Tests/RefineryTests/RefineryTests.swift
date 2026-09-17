@@ -431,6 +431,29 @@ final class KeychainStoreTests: XCTestCase {
             "http://api.example:80/v1",
         ])
     }
+
+    func testAPIKeyAccountsDistinguishEndpointQueries() throws {
+        var accounts: [String] = []
+        let copy: KeychainStore.CopyMatching = { query, _ in
+            let values = query as NSDictionary
+            accounts.append(values[kSecAttrAccount as String] as! String)
+            return errSecItemNotFound
+        }
+
+        _ = try KeychainStore.readAPIKey(
+            for: URL(string: "https://api.example/v1?tenant=A")!,
+            copyMatching: copy
+        )
+        _ = try KeychainStore.readAPIKey(
+            for: URL(string: "https://api.example/v1?tenant=B")!,
+            copyMatching: copy
+        )
+
+        XCTAssertEqual(accounts, [
+            "https://api.example:443/v1?tenant=A",
+            "https://api.example:443/v1?tenant=B",
+        ])
+    }
 }
 
 /// Drives a RecordingSession through real key events to verify capture,
@@ -791,6 +814,43 @@ final class ClipboardStoreTests: XCTestCase {
         let pasteboard = NSPasteboard(name: .init("RefineryTests.\(UUID().uuidString)"))
         XCTAssertTrue(ClipboardStore.write("  polished\n", to: pasteboard))
         XCTAssertEqual(pasteboard.string(forType: .string), "  polished\n")
+    }
+
+    func testFailedWriteRestoresEveryPreviousRepresentation() {
+        let item = NSPasteboardItem()
+        item.setString("original", forType: .string)
+        item.setData(Data([0x00, 0x7f, 0xff]), forType: .init("com.refinery.binary"))
+        let pasteboard = FailingPasteboard(items: [item])
+
+        XCTAssertFalse(ClipboardStore.write("polished", to: pasteboard))
+        XCTAssertEqual(pasteboard.pasteboardItems?.count, 1)
+        XCTAssertEqual(pasteboard.pasteboardItems?.first?.string(forType: .string), "original")
+        XCTAssertEqual(
+            pasteboard.pasteboardItems?.first?.data(forType: .init("com.refinery.binary")),
+            Data([0x00, 0x7f, 0xff])
+        )
+    }
+}
+
+private final class FailingPasteboard: PasteboardAccess {
+    var pasteboardItems: [NSPasteboardItem]?
+
+    init(items: [NSPasteboardItem]) {
+        pasteboardItems = items
+    }
+
+    func clearContents() -> Int {
+        pasteboardItems = nil
+        return 0
+    }
+
+    func setString(_ string: String, forType dataType: NSPasteboard.PasteboardType) -> Bool {
+        false
+    }
+
+    func writeObjects(_ objects: [any NSPasteboardWriting]) -> Bool {
+        pasteboardItems = objects.compactMap { $0 as? NSPasteboardItem }
+        return true
     }
 }
 
