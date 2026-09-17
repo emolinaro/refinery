@@ -14,7 +14,7 @@ PRESET="${1:-polish}"
 CUSTOM="${2:-}"
 TOKEN="refinery-smoke-$$-$RANDOM"
 MOCK_TEXT="MOCK POLISHED OUTPUT $TOKEN"
-MOCK_BODY="{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"$MOCK_TEXT\"}}]}"
+MOCK_BODY="{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"$MOCK_TEXT\"},\"finish_reason\":\"stop\"}]}"
 PORT_FILE="$PWD/.refinery-smoke-port.$$"
 
 echo "== starting mock endpoint =="
