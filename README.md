@@ -49,13 +49,17 @@ Accessibility.
 
 From the menu-bar icon you can configure:
 
-- **Base URL** - OpenAI-compatible endpoint (default suggestion:
-  `https://api.ucloud-ai.com/v1`)
-- **Model** - model name sent to chat completions (default suggestion:
-  `ucloud-ai`)
+- **Base URL** - your OpenAI-compatible endpoint. The first-run value
+  `https://api.ucloud-ai.com/v1` is a private-deployment example; replace it
+  with your own endpoint
+- **Model** - model name sent to chat completions. The first-run value
+  `ucloud-ai` matches that private-deployment example; replace it as needed
 - **API Key** - stored only in the macOS Keychain, never in plain files
 - **Hotkey** - record a ⌘/⌥/⌃-based combination, except common Command
-  shortcuts C, V, X, Z, A, Space, and Tab
+  shortcuts C, V, X, Z, A, Space, and Tab. Refinery requests exclusive
+  registration, but macOS cannot report an existing non-exclusive owner of the
+  same shortcut. Refinery may accept that collision and receive the shortcut
+  while the other app is suppressed, so verify a new shortcut after recording
 
 ## Development
 

@@ -47,8 +47,8 @@ final class HotkeyCenter: HotkeyManaging {
     }
 
     /// Registers the hotkey, replacing any previously registered one. The
-    /// previous registration is kept when the new combination cannot be
-    /// registered (e.g. it is owned by another app).
+    /// previous registration is kept when Carbon reports that the new
+    /// combination cannot be registered, such as with another exclusive owner.
     /// - Parameters:
     ///   - keyCode: Carbon virtual keycode.
     ///   - modifiers: Carbon modifier mask (cmdKey, optionKey, ...).

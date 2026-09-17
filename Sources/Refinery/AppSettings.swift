@@ -9,7 +9,7 @@ struct AppSettings: Codable, Equatable {
         case unreadable
     }
 
-    /// OpenAI-compatible base URL, e.g. "https://api.ucloud-ai.com/v1".
+    /// OpenAI-compatible base URL. The fallback is a private deployment example.
     var baseURL: String
     /// Model name sent to chat completions.
     var model: String
