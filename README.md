@@ -51,21 +51,26 @@ From the menu-bar icon you can configure:
 
 - **Base URL** - your OpenAI-compatible endpoint. The first-run value
   `https://api.ucloud-ai.com/v1` is a private-deployment example; replace it
-  with your own endpoint
+  with your own HTTPS endpoint. Plain HTTP is accepted only for localhost
 - **Model** - model name sent to chat completions. The first-run value
   `ucloud-ai` matches that private-deployment example; replace it as needed
-- **API Key** - stored only in the macOS Keychain, never in plain files
+- **API Key** - stored only in the macOS Keychain, never in plain files, and
+  kept separately for each endpoint URL
 - **Hotkey** - record a ⌘/⌥/⌃-based combination, except common Command
   shortcuts C, V, X, Z, A, Space, and Tab. Refinery requests exclusive
   registration, but macOS cannot report an existing non-exclusive owner of the
   same shortcut. Refinery may accept that collision and receive the shortcut
   while the other app is suppressed, so verify a new shortcut after recording
 
+Refinery sends `POST {baseURL}/chat/completions` and accepts the first choice
+only when its `finish_reason` is `stop`. Incomplete or malformed responses are
+not copied to the clipboard.
+
 ## Development
 
 ```sh
 swift build     # build
-swift test      # unit tests for presets and the endpoint client
+swift test      # unit tests for the core app components
 ```
 
 End-to-end smoke test (mock endpoint, dummy key):

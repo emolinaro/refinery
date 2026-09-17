@@ -13,7 +13,7 @@ enum HotkeyRecorder {
 
     /// Runs a recording session on the main thread.
     /// - Parameter completion: called with (keyCode, modifiers, displayString)
-    ///   on success, or (nil, nil, reason) when recording was cancelled.
+    ///   on success, or (nil, nil, reason) on failure or cancellation.
     static func start(completion: @escaping (UInt32?, UInt32?, String) -> Void) {
         currentSession?.invalidate()
         let session = RecordingSession(completion: completion)

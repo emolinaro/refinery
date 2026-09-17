@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Settings UI reachable from the menu-bar icon: endpoint URL, model, API key,
-/// preset picker and hotkey recording.
+/// and hotkey recording.
 struct SettingsView: View {
     @ObservedObject var model: AppModel
 

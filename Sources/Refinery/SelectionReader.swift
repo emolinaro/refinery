@@ -49,8 +49,8 @@ enum SelectionReader {
         return nil
     }
 
-    /// True when the app has (or can obtain) the accessibility permission needed
-    /// to read selections from other apps.
+    /// True when the app has the accessibility permission needed to read
+    /// selections from other apps.
     static func isAccessibilityEnabled() -> Bool {
         let options = ["AXTrustedCheckOptionPrompt": false] as CFDictionary
         return AXIsProcessTrustedWithOptions(options)
