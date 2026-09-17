@@ -26,7 +26,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let menu = NSMenu()
         let topItem = NSMenuItem()
-        topItem.view = NSHostingView(rootView: MenuBarView(model: model))
+        // Give the hosted view an explicit non-zero size: NSMenu measures items
+        // during tracking and a zero-height measurement makes the whole menu
+        // lay out empty and instantly dismiss (AppKit logs "A menu item's height
+        // should never be 0"). An explicit frame keeps the measurement non-zero
+        // before SwiftUI's first layout pass completes.
+        let content = NSHostingView(rootView: MenuBarView(model: model))
+        content.frame = NSRect(x: 0, y: 0, width: 380, height: 560)
+        topItem.view = content
         menu.addItem(topItem)
         item.menu = menu
 
