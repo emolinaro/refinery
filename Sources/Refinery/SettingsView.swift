@@ -36,7 +36,7 @@ struct SettingsView: View {
                 SecureField("sk-…", text: $draftAPIKey)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 200)
-                Button(model.apiKeyPresent ? "Saved" : "Save Key") {
+                Button("Save Key") {
                     saveKey()
                 }
                 .disabled(draftAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -114,8 +114,12 @@ struct SettingsView: View {
         let trimmed = draftAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         do {
-            try KeychainStore.saveAPIKey(trimmed)
-            model.apiKeyPresent = true
+            guard let url = URL(string: draftBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  EndpointClient.isAllowedBaseURL(url) else {
+                hotkeyFeedback = EndpointError.invalidBaseURL.localizedDescription
+                return
+            }
+            try KeychainStore.saveAPIKey(trimmed, for: url)
             draftAPIKey = ""
         } catch {
             hotkeyFeedback = error.localizedDescription

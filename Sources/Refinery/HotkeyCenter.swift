@@ -1,12 +1,19 @@
 import AppKit
 import Carbon.HIToolbox
 
+@MainActor
+protocol HotkeyManaging: AnyObject {
+    var onTrigger: (() -> Void)? { get set }
+    func register(keyCode: UInt32, modifiers: UInt32) -> Bool
+    func suspend()
+}
+
 /// A system-wide keyboard shortcut that fires with text selected in any app.
 ///
 /// Uses Carbon's `RegisterEventHotKey`, still the supported way to get a
 /// global hotkey on macOS without a helper process or sandbox entitlements.
 @MainActor
-final class HotkeyCenter {
+final class HotkeyCenter: HotkeyManaging {
     /// Called on the main thread whenever the registered hotkey fires.
     var onTrigger: (() -> Void)?
 

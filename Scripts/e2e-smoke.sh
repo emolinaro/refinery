@@ -80,14 +80,20 @@ PY
 [[ "$HEALTH" == "$TOKEN" ]] || { echo "mock endpoint ownership check failed" >&2; exit 1; }
 
 echo "== launching Refinery e2e harness =="
-OUTPUT="$(E2E_BASE_URL="http://127.0.0.1:$PORT/v1" \
+if OUTPUT="$(E2E_BASE_URL="http://127.0.0.1:$PORT/v1" \
 E2E_MODEL="mock-model" \
 E2E_PRESET="$PRESET" \
 E2E_CUSTOM_PROMPT="$CUSTOM" \
 E2E_INPUT="this is a smal test of refinery" \
 E2E_DUMMY_KEY="dummy-key-for-tests" \
 E2E_TIMEOUT=5 \
-swift run RefineryE2E 2>&1)"
+swift run RefineryE2E 2>&1)"; then
+    :
+else
+    STATUS=$?
+    printf '%s\n' "$OUTPUT"
+    exit "$STATUS"
+fi
 printf '%s\n' "$OUTPUT"
 [[ "$OUTPUT" == *"E2E: polished and copied: $MOCK_TEXT"* ]] || {
     echo "unexpected smoke-test response" >&2

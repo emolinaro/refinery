@@ -21,6 +21,21 @@ enum HotkeyRecorder {
         session.start()
     }
 
+    static func start(
+        requestAccess: @escaping () -> Bool,
+        tapFactory: @escaping RecordingSession.TapFactory,
+        completion: @escaping (UInt32?, UInt32?, String) -> Void
+    ) {
+        currentSession?.invalidate()
+        let session = RecordingSession(
+            completion: completion,
+            requestAccess: requestAccess,
+            tapFactory: tapFactory
+        )
+        currentSession = session
+        session.start()
+    }
+
     /// True for combinations that would intercept universal shortcuts like
     /// copy, paste, cut, undo, select-all, space or tab.
     static func isReservedCombo(keyCode: UInt32, modifiers: UInt32) -> Bool {
@@ -143,19 +158,37 @@ enum HotkeyRecorder {
 /// closes.
 @MainActor
 final class RecordingSession {
+    typealias TapFactory = (CGEventMask, CGEventTapCallBack, UnsafeMutableRawPointer) -> CFMachPort?
+
     private let completion: (UInt32?, UInt32?, String) -> Void
+    private let requestAccess: () -> Bool
+    private let tapFactory: TapFactory
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var observers: [NSObjectProtocol] = []
     private var finished = false
 
-    init(completion: @escaping (UInt32?, UInt32?, String) -> Void) {
+    convenience init(completion: @escaping (UInt32?, UInt32?, String) -> Void) {
+        self.init(
+            completion: completion,
+            requestAccess: Self.requestListenAccess,
+            tapFactory: Self.makeTap
+        )
+    }
+
+    init(
+        completion: @escaping (UInt32?, UInt32?, String) -> Void,
+        requestAccess: @escaping () -> Bool,
+        tapFactory: @escaping TapFactory
+    ) {
         self.completion = completion
+        self.requestAccess = requestAccess
+        self.tapFactory = tapFactory
         installEndObservers()
     }
 
     func start() {
-        guard CGPreflightListenEventAccess() || CGRequestListenEventAccess() else {
+        guard requestAccess() else {
             finish(
                 keyCode: nil,
                 modifiers: nil,
@@ -163,6 +196,7 @@ final class RecordingSession {
             )
             return
         }
+        guard !finished else { return }
 
         let mask = CGEventMask(1 << CGEventType.keyDown.rawValue)
         let callback: CGEventTapCallBack = { _, _, event, userInfo in
@@ -173,14 +207,7 @@ final class RecordingSession {
             }
             return Unmanaged.passUnretained(event)
         }
-        guard let tap = CGEvent.tapCreate(
-            tap: .cghidEventTap,
-            place: .headInsertEventTap,
-            options: .listenOnly,
-            eventsOfInterest: mask,
-            callback: callback,
-            userInfo: Unmanaged.passUnretained(self).toOpaque()
-        ) else {
+        guard let tap = tapFactory(mask, callback, Unmanaged.passUnretained(self).toOpaque()) else {
             finish(
                 keyCode: nil,
                 modifiers: nil,
@@ -292,5 +319,24 @@ final class RecordingSession {
         default:
             return false
         }
+    }
+
+    private static func requestListenAccess() -> Bool {
+        CGPreflightListenEventAccess() || CGRequestListenEventAccess()
+    }
+
+    private static func makeTap(
+        mask: CGEventMask,
+        callback: @escaping CGEventTapCallBack,
+        userInfo: UnsafeMutableRawPointer
+    ) -> CFMachPort? {
+        CGEvent.tapCreate(
+            tap: .cghidEventTap,
+            place: .headInsertEventTap,
+            options: .listenOnly,
+            eventsOfInterest: mask,
+            callback: callback,
+            userInfo: userInfo
+        )
     }
 }

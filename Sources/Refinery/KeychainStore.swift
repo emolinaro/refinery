@@ -4,32 +4,36 @@ import Security
 /// Stores and reads the endpoint API key in the macOS Keychain.
 ///
 /// The key never lives in plain files or UserDefaults; only a Keychain item
-/// with this service/account pair. All access goes through this type so the
-/// reading code never handles raw key bytes outside of a request.
+/// with a service/account pair scoped to the endpoint host. All access goes
+/// through this type so reading code never handles raw key bytes outside a request.
 enum KeychainStore {
     private static let service = "com.refinery.app.endpoint-key"
     typealias CopyMatching = (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus
 
     enum KeychainError: LocalizedError {
+        case invalidHost
         case unexpectedStatus(OSStatus)
 
         var errorDescription: String? {
             switch self {
+            case .invalidHost:
+                return "The endpoint does not have a valid host."
             case .unexpectedStatus(let status):
                 return "Keychain operation failed (status \(status))."
             }
         }
     }
 
-    /// Saves (creates or updates) the API key for the service.
-    static func saveAPIKey(_ key: String) throws {
+    /// Saves (creates or updates) the API key for the endpoint host.
+    static func saveAPIKey(_ key: String, for baseURL: URL) throws {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
         let data = Data(trimmed.utf8)
+        guard let account = account(for: baseURL) else { throw KeychainError.invalidHost }
 
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: "default",
+            kSecAttrAccount as String: account,
         ]
 
         // Update the existing item if present; otherwise create it.
@@ -50,12 +54,16 @@ enum KeychainStore {
         }
     }
 
-    /// Reads the saved API key, if any.
-    static func readAPIKey(copyMatching: CopyMatching = SecItemCopyMatching) throws -> String? {
+    /// Reads the saved API key for the endpoint host, if any.
+    static func readAPIKey(
+        for baseURL: URL,
+        copyMatching: CopyMatching = SecItemCopyMatching
+    ) throws -> String? {
+        guard let account = account(for: baseURL) else { throw KeychainError.invalidHost }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: "default",
+            kSecAttrAccount as String: account,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
@@ -72,8 +80,8 @@ enum KeychainStore {
         return key
     }
 
-    /// True when a key is saved.
-    static func hasAPIKey() -> Bool {
-        (try? readAPIKey()) != nil
+    private static func account(for baseURL: URL) -> String? {
+        guard let host = baseURL.host?.lowercased(), !host.isEmpty else { return nil }
+        return host
     }
 }

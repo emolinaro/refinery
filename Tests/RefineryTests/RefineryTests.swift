@@ -252,10 +252,12 @@ final class EndpointClientTests: XCTestCase {
             _ = try await client.polish("text", preset: .polish, apiKey: "dummy")
             XCTFail("expected httpStatus")
         } catch let error as EndpointError {
-            guard case .httpStatus(let code, _) = error else {
+            guard case .httpStatus(let code) = error else {
                 return XCTFail("unexpected error \(error)")
             }
             XCTAssertEqual(code, 500)
+            XCTAssertEqual(error.localizedDescription, "The endpoint returned HTTP 500.")
+            XCTAssertFalse(error.localizedDescription.contains("nope"))
         } catch {
             XCTFail("unexpected error type \(error)")
         }
@@ -313,6 +315,33 @@ final class EndpointClientTests: XCTestCase {
             }
         }
     }
+
+    func testResponseAccumulatorRejectsDataBeyondLimit() throws {
+        var accumulator = ResponseAccumulator(limit: 2)
+        try accumulator.append(1)
+        try accumulator.append(2)
+        XCTAssertThrowsError(try accumulator.append(3)) {
+            XCTAssertEqual($0 as? EndpointError, .responseTooLarge)
+        }
+        XCTAssertEqual(accumulator.data, Data([1, 2]))
+    }
+
+    func testResponseTooLargeErrorIsNotCollapsedIntoNetworkError() async {
+        let client = EndpointClient(
+            baseURL: URL(string: "https://api.example.com/v1")!,
+            model: "test-model",
+            transport: { _ in throw EndpointError.responseTooLarge }
+        )
+
+        do {
+            _ = try await client.polish("text", preset: .polish, apiKey: "dummy")
+            XCTFail("expected responseTooLarge")
+        } catch let error as EndpointError {
+            XCTAssertEqual(error, .responseTooLarge)
+        } catch {
+            XCTFail("unexpected error type \(error)")
+        }
+    }
 }
 
 @MainActor
@@ -328,17 +357,35 @@ final class CustomPromptPanelTests: XCTestCase {
 
 final class KeychainStoreTests: XCTestCase {
     func testMissingItemReturnsNil() throws {
-        let key = try KeychainStore.readAPIKey { _, _ in errSecItemNotFound }
+        let key = try KeychainStore.readAPIKey(for: URL(string: "https://api.example.com/v1")!) { _, _ in
+            errSecItemNotFound
+        }
         XCTAssertNil(key)
     }
 
     func testUnexpectedStatusIsPropagated() {
-        XCTAssertThrowsError(try KeychainStore.readAPIKey { _, _ in errSecAuthFailed }) { error in
+        XCTAssertThrowsError(try KeychainStore.readAPIKey(for: URL(string: "https://api.example.com/v1")!) { _, _ in
+            errSecAuthFailed
+        }) { error in
             guard case KeychainStore.KeychainError.unexpectedStatus(let status) = error else {
                 return XCTFail("unexpected error \(error)")
             }
             XCTAssertEqual(status, errSecAuthFailed)
         }
+    }
+
+    func testAPIKeyQueryUsesEndpointHostAsAccount() throws {
+        var accounts: [String] = []
+        let copy: KeychainStore.CopyMatching = { query, _ in
+            let values = query as NSDictionary
+            accounts.append(values[kSecAttrAccount as String] as! String)
+            return errSecItemNotFound
+        }
+
+        _ = try KeychainStore.readAPIKey(for: URL(string: "https://api.first.example/v1")!, copyMatching: copy)
+        _ = try KeychainStore.readAPIKey(for: URL(string: "https://API.SECOND.EXAMPLE/v2")!, copyMatching: copy)
+
+        XCTAssertEqual(accounts, ["api.first.example", "api.second.example"])
     }
 }
 
@@ -369,31 +416,68 @@ final class RecordingSessionTests: XCTestCase {
     }
 
     func testStartInvokesCompletionWhenTapCannotBeCreated() {
-        // The tap callback path needs Input Monitoring; start() handles the
-        // failure branch deterministically by completing with nil.
         let box = Box<(UInt32?, UInt32?, String)?>(nil)
-        HotkeyRecorder.start { keyCode, modifiers, reason in
-            box.value = (keyCode, modifiers, reason)
-        }
-        if HotkeyRecorder.currentSession == nil {
-            // Tap creation failed in this environment: start() must have
-            // completed synchronously with the permission failure.
-            XCTAssertNil(box.value?.0)
-            XCTAssertTrue(
-                [
-                    "Input Monitoring permission is required to record a hotkey.",
-                    "Could not listen for keyboard events; check Input Monitoring permission.",
-                ].contains(box.value?.2 ?? "")
-            )
-        } else {
-            // Tap creation succeeded in this environment; the session stays
-            // current until a combination is captured.
-            HotkeyRecorder.currentSession?.handle(keyEvent(keyCode: CGKeyCode(kVK_ANSI_P), flags: [.maskCommand, .maskAlternate]))
-            XCTAssertEqual(box.value?.0, UInt32(kVK_ANSI_P))
-            XCTAssertEqual(box.value?.1, UInt32(cmdKey | optionKey))
-            XCTAssertNil(HotkeyRecorder.currentSession)
-        }
-        XCTAssertNotNil(box.value)
+        let session = RecordingSession(
+            completion: { keyCode, modifiers, reason in
+                box.value = (keyCode, modifiers, reason)
+            },
+            requestAccess: { true },
+            tapFactory: { _, _, _ in nil }
+        )
+        HotkeyRecorder.currentSession = session
+
+        session.start()
+
+        XCTAssertNil(box.value?.0)
+        XCTAssertEqual(box.value?.2, "Could not listen for keyboard events; check Input Monitoring permission.")
+        XCTAssertNil(HotkeyRecorder.currentSession)
+    }
+
+    func testStartDoesNotCreateTapAfterSessionFinishesDuringPermissionRequest() {
+        let box = Box<(UInt32?, UInt32?, String)?>(nil)
+        var tapCreationAttempted = false
+        let session = RecordingSession(
+            completion: { keyCode, modifiers, reason in
+                box.value = (keyCode, modifiers, reason)
+            },
+            requestAccess: {
+                NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: nil)
+                return true
+            },
+            tapFactory: { _, _, _ in
+                tapCreationAttempted = true
+                return nil
+            }
+        )
+        HotkeyRecorder.currentSession = session
+
+        session.start()
+
+        XCTAssertEqual(box.value?.2, "Cancelled.")
+        XCTAssertFalse(tapCreationAttempted)
+        XCTAssertNil(HotkeyRecorder.currentSession)
+    }
+
+    func testStartReportsDeniedListenAccessWithoutCreatingTap() {
+        let box = Box<(UInt32?, UInt32?, String)?>(nil)
+        var tapCreationAttempted = false
+        let session = RecordingSession(
+            completion: { keyCode, modifiers, reason in
+                box.value = (keyCode, modifiers, reason)
+            },
+            requestAccess: { false },
+            tapFactory: { _, _, _ in
+                tapCreationAttempted = true
+                return nil
+            }
+        )
+        HotkeyRecorder.currentSession = session
+
+        session.start()
+
+        XCTAssertEqual(box.value?.2, "Input Monitoring permission is required to record a hotkey.")
+        XCTAssertFalse(tapCreationAttempted)
+        XCTAssertNil(HotkeyRecorder.currentSession)
     }
 
     func testHandleCapturesCommandOptionCombo() {
@@ -462,26 +546,44 @@ final class RecordingSessionTests: XCTestCase {
         let (first, firstBox) = makeSession()
 
         let secondBox = Box<(UInt32?, UInt32?, String)?>(nil)
-        HotkeyRecorder.start { keyCode, modifiers, reason in
-            secondBox.value = (keyCode, modifiers, reason)
-        }
+        HotkeyRecorder.start(
+            requestAccess: { true },
+            tapFactory: { _, _, _ in nil },
+            completion: { keyCode, modifiers, reason in
+                secondBox.value = (keyCode, modifiers, reason)
+            }
+        )
         let second = HotkeyRecorder.currentSession
 
-        // The previous session is invalidated, never completed.
         XCTAssertNil(firstBox.value)
         XCTAssertFalse(HotkeyRecorder.currentSession === first)
+        XCTAssertNil(second)
+        XCTAssertNil(secondBox.value?.0)
+        XCTAssertEqual(secondBox.value?.2, "Could not listen for keyboard events; check Input Monitoring permission.")
+    }
+}
 
-        if let second {
-            // Tap creation succeeded: the new session is current and captures.
-            XCTAssertFalse(second === first)
-            second.handle(keyEvent(keyCode: CGKeyCode(kVK_ANSI_P), flags: [.maskCommand, .maskAlternate]))
-            XCTAssertEqual(secondBox.value?.0, UInt32(kVK_ANSI_P))
-            XCTAssertNil(HotkeyRecorder.currentSession)
-        } else {
-            // Tap creation failed: the new session completed with nil.
-            XCTAssertNotNil(secondBox.value)
-            XCTAssertNil(secondBox.value?.0)
-        }
+@MainActor
+final class AppModelHotkeyTests: XCTestCase {
+    func testFailedAdoptionRestoresPersistedHotkeyAfterSuspension() {
+        let hotkeys = StubHotkeyManager(registrationResults: [true, false, true])
+        let settings = AppSettings(
+            baseURL: "https://api.example.com/v1",
+            model: "test-model",
+            hotkeyKeyCode: kVK_ANSI_P,
+            hotkeyModifiers: cmdKey | optionKey
+        )
+        let model = AppModel(settings: settings, hotkeyCenter: hotkeys)
+
+        model.suspendHotkey()
+        XCTAssertFalse(model.adoptHotkey(keyCode: kVK_ANSI_J, modifiers: cmdKey | optionKey))
+
+        XCTAssertEqual(hotkeys.registrations.count, 3)
+        XCTAssertEqual(hotkeys.registrations[0].0, UInt32(kVK_ANSI_P))
+        XCTAssertEqual(hotkeys.registrations[1].0, UInt32(kVK_ANSI_J))
+        XCTAssertEqual(hotkeys.registrations[2].0, UInt32(kVK_ANSI_P))
+        XCTAssertEqual(hotkeys.registrations.map(\.1), Array(repeating: UInt32(cmdKey | optionKey), count: 3))
+        XCTAssertEqual(model.settings.hotkeyKeyCode, kVK_ANSI_P)
     }
 }
 
@@ -572,4 +674,22 @@ private final class RequestRecorder: @unchecked Sendable {
             )!
         )
     }
+}
+
+@MainActor
+private final class StubHotkeyManager: HotkeyManaging {
+    var onTrigger: (() -> Void)?
+    var registrations: [(UInt32, UInt32)] = []
+    private var registrationResults: [Bool]
+
+    init(registrationResults: [Bool]) {
+        self.registrationResults = registrationResults
+    }
+
+    func register(keyCode: UInt32, modifiers: UInt32) -> Bool {
+        registrations.append((keyCode, modifiers))
+        return registrationResults.removeFirst()
+    }
+
+    func suspend() {}
 }

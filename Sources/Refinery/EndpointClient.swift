@@ -23,7 +23,9 @@ public enum EndpointError: LocalizedError, Equatable {
     /// The request timed out or the connection failed.
     case network(String)
     /// A non-2xx HTTP status came back.
-    case httpStatus(Int, String)
+    case httpStatus(Int)
+    /// The endpoint response exceeded Refinery's memory limit.
+    case responseTooLarge
     /// The response body was not decodable as a chat-completions response.
     case invalidResponse
     /// The response carried no choices or an empty message.
@@ -40,9 +42,10 @@ public enum EndpointError: LocalizedError, Equatable {
             return "The request to the endpoint could not be built."
         case .network(let message):
             return "Could not reach the endpoint: \(message)"
-        case .httpStatus(let code, let body):
-            let trimmed = body.isEmpty ? "no body" : String(body.prefix(300))
-            return "The endpoint returned HTTP \(code): \(trimmed)"
+        case .httpStatus(let code):
+            return "The endpoint returned HTTP \(code)."
+        case .responseTooLarge:
+            return "The endpoint response exceeded the 4 MB limit."
         case .invalidResponse:
             return "The endpoint returned a response Refinery could not parse."
         case .emptyCompletion:
@@ -59,6 +62,8 @@ public enum EndpointError: LocalizedError, Equatable {
 /// The API key is passed in per request and is never logged, stored on disk or
 /// included in error descriptions.
 public struct EndpointClient {
+    static let maximumResponseBytes = 4 * 1024 * 1024
+
     public var baseURL: URL
     public var model: String
     public var timeout: TimeInterval = 60
@@ -94,11 +99,18 @@ public struct EndpointClient {
             delegateQueue: nil
         )
         defer { session.finishTasksAndInvalidate() }
-        let (data, response) = try await session.data(for: request)
+        let (bytes, response) = try await session.bytes(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw EndpointError.network("not an HTTP response")
         }
-        return (data, http)
+        if response.expectedContentLength > Int64(maximumResponseBytes) {
+            throw EndpointError.responseTooLarge
+        }
+        var accumulator = ResponseAccumulator(limit: maximumResponseBytes)
+        for try await byte in bytes {
+            try accumulator.append(byte)
+        }
+        return (accumulator.data, http)
     }
 
     public init(baseURL: URL, model: String, timeout: TimeInterval = 60) {
@@ -167,13 +179,14 @@ public struct EndpointClient {
         let response: HTTPURLResponse
         do {
             (data, response) = try await transport(request)
+        } catch let error as EndpointError {
+            throw error
         } catch {
             throw EndpointError.network(error.localizedDescription)
         }
 
         guard (200...299).contains(response.statusCode) else {
-            let body = String(data: data, encoding: .utf8) ?? ""
-            throw EndpointError.httpStatus(response.statusCode, body)
+            throw EndpointError.httpStatus(response.statusCode)
         }
 
         let decoded: ResponseBody
@@ -194,5 +207,15 @@ public struct EndpointClient {
             throw EndpointError.emptyCompletion
         }
         return content
+    }
+}
+
+struct ResponseAccumulator {
+    let limit: Int
+    private(set) var data = Data()
+
+    mutating func append(_ byte: UInt8) throws {
+        guard data.count < limit else { throw EndpointError.responseTooLarge }
+        data.append(byte)
     }
 }

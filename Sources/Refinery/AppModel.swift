@@ -9,7 +9,6 @@ public final class AppModel: ObservableObject {
     // MARK: Published state
     @Published var settings: AppSettings
     @Published var lastOutcome: Outcome?
-    @Published var apiKeyPresent = KeychainStore.hasAPIKey()
     @Published var isRunning = false
     @Published private(set) var settingsAreReadable: Bool
 
@@ -19,14 +18,16 @@ public final class AppModel: ObservableObject {
         case failure(String)
     }
 
-    private let hotkeyCenter = HotkeyCenter()
+    private let hotkeyCenter: any HotkeyManaging
 
     /// Exposes hotkey wiring to the app delegate.
     public func setTrigger(_ handler: @escaping () -> Void) {
         hotkeyCenter.onTrigger = handler
     }
 
-    public init() {
+    public convenience init() {
+        let settings: AppSettings
+        let settingsAreReadable: Bool
         do {
             settings = try AppSettings.load()
             settingsAreReadable = true
@@ -34,6 +35,21 @@ public final class AppModel: ObservableObject {
             settings = AppSettings(baseURL: "", model: "")
             settingsAreReadable = false
         }
+        self.init(
+            settings: settings,
+            settingsAreReadable: settingsAreReadable,
+            hotkeyCenter: HotkeyCenter()
+        )
+    }
+
+    init(
+        settings: AppSettings,
+        settingsAreReadable: Bool = true,
+        hotkeyCenter: any HotkeyManaging
+    ) {
+        self.settings = settings
+        self.settingsAreReadable = settingsAreReadable
+        self.hotkeyCenter = hotkeyCenter
         applyHotkey()
     }
 
@@ -76,6 +92,7 @@ public final class AppModel: ObservableObject {
             }
         } else {
             lastOutcome = .failure("Could not register hotkey; it may be in use by another app.")
+            applyHotkey()
         }
         return ok
     }
@@ -108,7 +125,7 @@ public final class AppModel: ObservableObject {
 
         let key: String
         do {
-            guard let savedKey = try KeychainStore.readAPIKey() else {
+            guard let savedKey = try KeychainStore.readAPIKey(for: url) else {
                 lastOutcome = .failure(EndpointError.missingAPIKey.localizedDescription)
                 return
             }
