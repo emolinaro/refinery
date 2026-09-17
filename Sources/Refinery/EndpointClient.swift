@@ -30,7 +30,7 @@ public enum EndpointError: LocalizedError, Equatable {
     case invalidResponse
     /// The response carried no choices or an empty message.
     case emptyCompletion
-    case incompleteCompletion(String)
+    case incompleteCompletion
 
     public var errorDescription: String? {
         switch self {
@@ -50,8 +50,8 @@ public enum EndpointError: LocalizedError, Equatable {
             return "The endpoint returned a response Refinery could not parse."
         case .emptyCompletion:
             return "The endpoint returned an empty result."
-        case .incompleteCompletion(let reason):
-            return "The endpoint returned an incomplete result (\(reason))."
+        case .incompleteCompletion:
+            return "The endpoint returned an incomplete result."
         }
     }
 }
@@ -203,7 +203,7 @@ public struct EndpointClient {
             throw EndpointError.emptyCompletion
         }
         if let reason = choice.finishReason, reason != "stop" {
-            throw EndpointError.incompleteCompletion(reason)
+            throw EndpointError.incompleteCompletion
         }
         guard let content = choice.message?.content,
               !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {

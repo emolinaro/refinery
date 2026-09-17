@@ -65,7 +65,6 @@ struct SettingsView: View {
                                     hotkeyFeedback = "Could not set \(display); the previous hotkey is kept."
                                 }
                             } else {
-                                model.applyHotkey()
                                 hotkeyFeedback = display
                             }
                         }

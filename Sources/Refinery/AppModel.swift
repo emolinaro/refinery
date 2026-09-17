@@ -118,7 +118,6 @@ public final class AppModel: ObservableObject {
             }
         } else {
             lastOutcome = .failure("Could not register hotkey; it may be in use by another app.")
-            applyHotkey()
         }
         return ok
     }

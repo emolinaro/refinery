@@ -344,7 +344,9 @@ final class EndpointClientTests: XCTestCase {
                 _ = try await client.polish("text", preset: .polish, apiKey: "dummy")
                 XCTFail("expected incompleteCompletion")
             } catch let error as EndpointError {
-                XCTAssertEqual(error, .incompleteCompletion(reason))
+                XCTAssertEqual(error, .incompleteCompletion)
+                XCTAssertEqual(error.localizedDescription, "The endpoint returned an incomplete result.")
+                XCTAssertFalse(error.localizedDescription.contains(reason))
             } catch {
                 XCTFail("unexpected error type \(error)")
             }
@@ -454,6 +456,29 @@ final class KeychainStoreTests: XCTestCase {
             "https://api.example:443/v1?tenant=B",
         ])
     }
+
+    func testAPIKeyAccountsDistinguishEncodedAndLiteralPathSeparators() throws {
+        var accounts: [String] = []
+        let copy: KeychainStore.CopyMatching = { query, _ in
+            let values = query as NSDictionary
+            accounts.append(values[kSecAttrAccount as String] as! String)
+            return errSecItemNotFound
+        }
+
+        _ = try KeychainStore.readAPIKey(
+            for: URL(string: "https://api.example/v1%2Ftenant")!,
+            copyMatching: copy
+        )
+        _ = try KeychainStore.readAPIKey(
+            for: URL(string: "https://api.example/v1/tenant")!,
+            copyMatching: copy
+        )
+
+        XCTAssertEqual(accounts, [
+            "https://api.example:443/v1%2Ftenant",
+            "https://api.example:443/v1/tenant",
+        ])
+    }
 }
 
 /// Drives a RecordingSession through real key events to verify capture,
@@ -484,19 +509,36 @@ final class RecordingSessionTests: XCTestCase {
 
     func testStartInvokesCompletionWhenTapCannotBeCreated() {
         let box = Box<(UInt32?, UInt32?, String)?>(nil)
+        var tapOptions: CGEventTapOptions?
+        var eventWasConsumed = false
         let session = RecordingSession(
             completion: { keyCode, modifiers, reason in
                 box.value = (keyCode, modifiers, reason)
             },
             requestAccess: { true },
-            tapFactory: { _, _, _ in nil }
+            tapFactory: { options, _, callback, userInfo in
+                tapOptions = options
+                let event = self.keyEvent(
+                    keyCode: CGKeyCode(kVK_ANSI_Q),
+                    flags: [.maskCommand]
+                )
+                eventWasConsumed = callback(
+                    CGEventTapProxy(bitPattern: 1)!,
+                    .keyDown,
+                    event,
+                    userInfo
+                ) == nil
+                return nil
+            }
         )
         HotkeyRecorder.currentSession = session
 
         session.start()
 
         XCTAssertNil(box.value?.0)
-        XCTAssertEqual(box.value?.2, "Could not listen for keyboard events; check Input Monitoring permission.")
+        XCTAssertEqual(tapOptions, .defaultTap)
+        XCTAssertTrue(eventWasConsumed)
+        XCTAssertEqual(box.value?.2, "Could not capture keyboard events; check Accessibility permission.")
         XCTAssertNil(HotkeyRecorder.currentSession)
     }
 
@@ -511,7 +553,7 @@ final class RecordingSessionTests: XCTestCase {
                 NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: nil)
                 return true
             },
-            tapFactory: { _, _, _ in
+            tapFactory: { _, _, _, _ in
                 tapCreationAttempted = true
                 return nil
             }
@@ -525,7 +567,7 @@ final class RecordingSessionTests: XCTestCase {
         XCTAssertNil(HotkeyRecorder.currentSession)
     }
 
-    func testStartReportsDeniedListenAccessWithoutCreatingTap() {
+    func testStartReportsDeniedAccessibilityWithoutCreatingTap() {
         let box = Box<(UInt32?, UInt32?, String)?>(nil)
         var tapCreationAttempted = false
         let session = RecordingSession(
@@ -533,7 +575,7 @@ final class RecordingSessionTests: XCTestCase {
                 box.value = (keyCode, modifiers, reason)
             },
             requestAccess: { false },
-            tapFactory: { _, _, _ in
+            tapFactory: { _, _, _, _ in
                 tapCreationAttempted = true
                 return nil
             }
@@ -542,7 +584,7 @@ final class RecordingSessionTests: XCTestCase {
 
         session.start()
 
-        XCTAssertEqual(box.value?.2, "Input Monitoring permission is required to record a hotkey.")
+        XCTAssertEqual(box.value?.2, "Accessibility permission is required to record a hotkey.")
         XCTAssertFalse(tapCreationAttempted)
         XCTAssertNil(HotkeyRecorder.currentSession)
     }
@@ -635,7 +677,7 @@ final class RecordingSessionTests: XCTestCase {
         let secondBox = Box<(UInt32?, UInt32?, String)?>(nil)
         HotkeyRecorder.start(
             requestAccess: { true },
-            tapFactory: { _, _, _ in nil },
+            tapFactory: { _, _, _, _ in nil },
             completion: { keyCode, modifiers, reason in
                 secondBox.value = (keyCode, modifiers, reason)
             }
@@ -646,14 +688,14 @@ final class RecordingSessionTests: XCTestCase {
         XCTAssertFalse(HotkeyRecorder.currentSession === first)
         XCTAssertNil(second)
         XCTAssertNil(secondBox.value?.0)
-        XCTAssertEqual(secondBox.value?.2, "Could not listen for keyboard events; check Input Monitoring permission.")
+        XCTAssertEqual(secondBox.value?.2, "Could not capture keyboard events; check Accessibility permission.")
     }
 }
 
 @MainActor
 final class AppModelHotkeyTests: XCTestCase {
     func testFailedAdoptionKeepsPersistedHotkeyRegisteredAfterSuppression() {
-        let hotkeys = StubHotkeyManager(registrationResults: [true, false, true])
+        let hotkeys = StubHotkeyManager(registrationResults: [true, false])
         let settings = AppSettings(
             baseURL: "https://api.example.com/v1",
             model: "test-model",
@@ -667,11 +709,10 @@ final class AppModelHotkeyTests: XCTestCase {
         XCTAssertEqual(hotkeys.activeKeyCode, UInt32(kVK_ANSI_P))
         XCTAssertFalse(model.adoptHotkey(keyCode: kVK_ANSI_J, modifiers: cmdKey | optionKey))
 
-        XCTAssertEqual(hotkeys.registrations.count, 3)
+        XCTAssertEqual(hotkeys.registrations.count, 2)
         XCTAssertEqual(hotkeys.registrations[0].0, UInt32(kVK_ANSI_P))
         XCTAssertEqual(hotkeys.registrations[1].0, UInt32(kVK_ANSI_J))
-        XCTAssertEqual(hotkeys.registrations[2].0, UInt32(kVK_ANSI_P))
-        XCTAssertEqual(hotkeys.registrations.map(\.1), Array(repeating: UInt32(cmdKey | optionKey), count: 3))
+        XCTAssertEqual(hotkeys.registrations.map(\.1), Array(repeating: UInt32(cmdKey | optionKey), count: 2))
         XCTAssertEqual(model.settings.hotkeyKeyCode, kVK_ANSI_P)
         XCTAssertEqual(hotkeys.activeKeyCode, UInt32(kVK_ANSI_P))
         XCTAssertTrue(hotkeys.isTriggerSuppressed)

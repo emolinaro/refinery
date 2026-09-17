@@ -90,14 +90,17 @@ enum KeychainStore {
         default: return nil
         }
         let endpointHost = host.contains(":") ? "[\(host)]" : host
-        var path = baseURL.path
+        guard let components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
+            return nil
+        }
+        var path = components.percentEncodedPath
         while path.count > 1, path.hasSuffix("/") {
             path.removeLast()
         }
         if path.isEmpty {
             path = "/"
         }
-        let query = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)?.percentEncodedQuery
+        let query = components.percentEncodedQuery
             .map { "?\($0)" } ?? ""
         return "\(scheme)://\(endpointHost):\(baseURL.port ?? defaultPort)\(path)\(query)"
     }

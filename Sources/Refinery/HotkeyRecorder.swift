@@ -2,10 +2,10 @@ import AppKit
 import Carbon.HIToolbox
 import SwiftUI
 
-/// Captures a global hotkey by listening for the next key press with modifiers.
+/// Captures a global hotkey from the next key press with modifiers.
 ///
 /// Recording runs while the menu-bar dropdown is open, so keys arrive through
-/// a listen-only CGEventTap on the main run loop in common modes: the tap
+/// an active CGEventTap on the main run loop in common modes: the tap
 /// keeps firing during menu tracking, where local NSEvent monitors never run.
 @MainActor
 enum HotkeyRecorder {
@@ -174,12 +174,17 @@ enum HotkeyRecorder {
     }
 }
 
-/// A single recording session: owns a listen-only event tap and ends itself
+/// A single recording session: owns an active event tap and ends itself
 /// when a combination is captured, on Escape, or when the settings menu
 /// closes.
 @MainActor
 final class RecordingSession {
-    typealias TapFactory = (CGEventMask, CGEventTapCallBack, UnsafeMutableRawPointer) -> CFMachPort?
+    typealias TapFactory = (
+        CGEventTapOptions,
+        CGEventMask,
+        CGEventTapCallBack,
+        UnsafeMutableRawPointer
+    ) -> CFMachPort?
 
     private let completion: (UInt32?, UInt32?, String) -> Void
     private let requestAccess: () -> Bool
@@ -194,7 +199,7 @@ final class RecordingSession {
     convenience init(completion: @escaping (UInt32?, UInt32?, String) -> Void) {
         self.init(
             completion: completion,
-            requestAccess: Self.requestListenAccess,
+            requestAccess: Self.requestControlAccess,
             tapFactory: Self.makeTap
         )
     }
@@ -215,7 +220,7 @@ final class RecordingSession {
             finish(
                 keyCode: nil,
                 modifiers: nil,
-                reason: "Input Monitoring permission is required to record a hotkey."
+                reason: "Accessibility permission is required to record a hotkey."
             )
             return
         }
@@ -229,13 +234,18 @@ final class RecordingSession {
             MainActor.assumeIsolated {
                 session.handle(event)
             }
-            return Unmanaged.passUnretained(event)
+            return nil
         }
-        guard let tap = tapFactory(mask, callback, Unmanaged.passUnretained(self).toOpaque()) else {
+        guard let tap = tapFactory(
+            .defaultTap,
+            mask,
+            callback,
+            Unmanaged.passUnretained(self).toOpaque()
+        ) else {
             finish(
                 keyCode: nil,
                 modifiers: nil,
-                reason: "Could not listen for keyboard events; check Input Monitoring permission."
+                reason: "Could not capture keyboard events; check Accessibility permission."
             )
             return
         }
@@ -347,11 +357,14 @@ final class RecordingSession {
         }
     }
 
-    private static func requestListenAccess() -> Bool {
-        CGPreflightListenEventAccess() || CGRequestListenEventAccess()
+    private static func requestControlAccess() -> Bool {
+        guard !SelectionReader.isAccessibilityEnabled() else { return true }
+        SelectionReader.promptForAccessibility()
+        return false
     }
 
     private static func makeTap(
+        options: CGEventTapOptions,
         mask: CGEventMask,
         callback: @escaping CGEventTapCallBack,
         userInfo: UnsafeMutableRawPointer
@@ -359,7 +372,7 @@ final class RecordingSession {
         CGEvent.tapCreate(
             tap: .cghidEventTap,
             place: .headInsertEventTap,
-            options: .listenOnly,
+            options: options,
             eventsOfInterest: mask,
             callback: callback,
             userInfo: userInfo
