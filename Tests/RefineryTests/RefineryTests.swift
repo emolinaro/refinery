@@ -565,7 +565,7 @@ final class RecordingSessionTests: XCTestCase {
 
 @MainActor
 final class AppModelHotkeyTests: XCTestCase {
-    func testFailedAdoptionRestoresPersistedHotkeyAfterSuspension() {
+    func testFailedAdoptionKeepsPersistedHotkeyRegisteredAfterSuppression() {
         let hotkeys = StubHotkeyManager(registrationResults: [true, false, true])
         let settings = AppSettings(
             baseURL: "https://api.example.com/v1",
@@ -576,6 +576,8 @@ final class AppModelHotkeyTests: XCTestCase {
         let model = AppModel(settings: settings, hotkeyCenter: hotkeys)
 
         model.suspendHotkey()
+        XCTAssertTrue(hotkeys.isTriggerSuppressed)
+        XCTAssertEqual(hotkeys.activeKeyCode, UInt32(kVK_ANSI_P))
         XCTAssertFalse(model.adoptHotkey(keyCode: kVK_ANSI_J, modifiers: cmdKey | optionKey))
 
         XCTAssertEqual(hotkeys.registrations.count, 3)
@@ -584,6 +586,57 @@ final class AppModelHotkeyTests: XCTestCase {
         XCTAssertEqual(hotkeys.registrations[2].0, UInt32(kVK_ANSI_P))
         XCTAssertEqual(hotkeys.registrations.map(\.1), Array(repeating: UInt32(cmdKey | optionKey), count: 3))
         XCTAssertEqual(model.settings.hotkeyKeyCode, kVK_ANSI_P)
+        XCTAssertEqual(hotkeys.activeKeyCode, UInt32(kVK_ANSI_P))
+        XCTAssertFalse(hotkeys.isTriggerSuppressed)
+    }
+
+    func testUnreadableSettingsAreNotPersistedByUnrelatedUpdates() {
+        var persisted: [AppSettings] = []
+        let hotkeys = StubHotkeyManager(registrationResults: [true, true])
+        let model = AppModel(
+            settings: AppSettings(baseURL: "", model: ""),
+            settingsAreReadable: false,
+            hotkeyCenter: hotkeys,
+            persistSettings: { persisted.append($0) }
+        )
+
+        model.update { $0.preset = .formal }
+        XCTAssertTrue(model.adoptHotkey(keyCode: kVK_ANSI_J, modifiers: cmdKey | optionKey))
+
+        XCTAssertFalse(model.settingsAreReadable)
+        XCTAssertTrue(persisted.isEmpty)
+    }
+
+    func testValidEndpointReconfigurationPersistsAndRestoresReadableState() {
+        var persisted: [AppSettings] = []
+        let model = AppModel(
+            settings: AppSettings(baseURL: "", model: "", preset: .formal),
+            settingsAreReadable: false,
+            hotkeyCenter: StubHotkeyManager(registrationResults: [true]),
+            persistSettings: { persisted.append($0) }
+        )
+
+        XCTAssertTrue(model.updateEndpoint(baseURL: " https://api.example.com/v1 ", model: " model "))
+
+        XCTAssertTrue(model.settingsAreReadable)
+        XCTAssertEqual(model.settings.baseURL, "https://api.example.com/v1")
+        XCTAssertEqual(model.settings.model, "model")
+        XCTAssertEqual(persisted, [model.settings])
+    }
+
+    func testInvalidEndpointReconfigurationLeavesUnreadableStateUntouched() {
+        var persisted: [AppSettings] = []
+        let model = AppModel(
+            settings: AppSettings(baseURL: "", model: ""),
+            settingsAreReadable: false,
+            hotkeyCenter: StubHotkeyManager(registrationResults: [true]),
+            persistSettings: { persisted.append($0) }
+        )
+
+        XCTAssertFalse(model.updateEndpoint(baseURL: "http://api.example.com/v1", model: "model"))
+
+        XCTAssertFalse(model.settingsAreReadable)
+        XCTAssertTrue(persisted.isEmpty)
     }
 }
 
@@ -680,6 +733,8 @@ private final class RequestRecorder: @unchecked Sendable {
 private final class StubHotkeyManager: HotkeyManaging {
     var onTrigger: (() -> Void)?
     var registrations: [(UInt32, UInt32)] = []
+    private(set) var activeKeyCode: UInt32?
+    private(set) var isTriggerSuppressed = false
     private var registrationResults: [Bool]
 
     init(registrationResults: [Bool]) {
@@ -688,8 +743,15 @@ private final class StubHotkeyManager: HotkeyManaging {
 
     func register(keyCode: UInt32, modifiers: UInt32) -> Bool {
         registrations.append((keyCode, modifiers))
-        return registrationResults.removeFirst()
+        let result = registrationResults.removeFirst()
+        if result {
+            activeKeyCode = keyCode
+            isTriggerSuppressed = false
+        }
+        return result
     }
 
-    func suspend() {}
+    func suspend() {
+        isTriggerSuppressed = true
+    }
 }

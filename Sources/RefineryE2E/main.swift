@@ -30,8 +30,9 @@ struct RefineryE2E {
         do {
             let client = EndpointClient(baseURL: baseURL, model: model, timeout: timeout)
             let result = try await client.polish(input, preset: preset, customPrompt: custom, apiKey: key)
-            guard ClipboardStore.write(result),
-                  NSPasteboard.general.string(forType: .string) == result else {
+            let pasteboard = NSPasteboard(name: .init("RefineryE2E.\(UUID().uuidString)"))
+            guard ClipboardStore.write(result, to: pasteboard),
+                  pasteboard.string(forType: .string) == result else {
                 fail("clipboard write failed")
             }
             print("E2E: polished and copied: \(result)")

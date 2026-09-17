@@ -21,6 +21,7 @@ final class HotkeyCenter: HotkeyManaging {
     private var eventHandler: EventHandlerRef?
     private var currentKeyCode: UInt32 = 0
     private var currentModifiers: UInt32 = 0
+    private var isTriggerSuppressed = false
 
     init() {}
 
@@ -34,6 +35,7 @@ final class HotkeyCenter: HotkeyManaging {
     @discardableResult
     func register(keyCode: UInt32, modifiers: UInt32) -> Bool {
         if hotkeyRef != nil, keyCode == currentKeyCode, modifiers == currentModifiers {
+            isTriggerSuppressed = false
             return true
         }
 
@@ -55,18 +57,17 @@ final class HotkeyCenter: HotkeyManaging {
         hotkeyRef = newRef
         currentKeyCode = keyCode
         currentModifiers = modifiers
+        isTriggerSuppressed = false
         return true
     }
 
     func suspend() {
-        if let hotkeyRef {
-            UnregisterEventHotKey(hotkeyRef)
-            self.hotkeyRef = nil
-        }
+        isTriggerSuppressed = true
     }
 
     /// Fires the trigger on the main thread.
     private func fire() {
+        guard !isTriggerSuppressed else { return }
         onTrigger?()
     }
 

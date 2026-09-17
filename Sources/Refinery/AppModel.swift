@@ -19,6 +19,7 @@ public final class AppModel: ObservableObject {
     }
 
     private let hotkeyCenter: any HotkeyManaging
+    private let persistSettings: (AppSettings) -> Void
 
     /// Exposes hotkey wiring to the app delegate.
     public func setTrigger(_ handler: @escaping () -> Void) {
@@ -45,19 +46,39 @@ public final class AppModel: ObservableObject {
     init(
         settings: AppSettings,
         settingsAreReadable: Bool = true,
-        hotkeyCenter: any HotkeyManaging
+        hotkeyCenter: any HotkeyManaging,
+        persistSettings: @escaping (AppSettings) -> Void = { $0.save() }
     ) {
         self.settings = settings
         self.settingsAreReadable = settingsAreReadable
         self.hotkeyCenter = hotkeyCenter
+        self.persistSettings = persistSettings
         applyHotkey()
     }
 
     // MARK: Settings
     func update(_ mutate: (inout AppSettings) -> Void) {
         mutate(&settings)
-        settings.save()
+        if settingsAreReadable {
+            persistSettings(settings)
+        }
+    }
+
+    @discardableResult
+    func updateEndpoint(baseURL: String, model: String) -> Bool {
+        let trimmedBaseURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmedBaseURL),
+              EndpointClient.isAllowedBaseURL(url),
+              !trimmedModel.isEmpty else {
+            lastOutcome = .failure(EndpointError.invalidBaseURL.localizedDescription)
+            return false
+        }
+        settings.baseURL = trimmedBaseURL
+        settings.model = trimmedModel
         settingsAreReadable = true
+        persistSettings(settings)
+        return true
     }
 
     var baseURL: URL? {

@@ -84,10 +84,7 @@ struct SettingsView: View {
             HStack {
                 Spacer()
                 Button("Apply") {
-                    model.update {
-                        $0.baseURL = draftBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-                        $0.model = draftModel.trimmingCharacters(in: .whitespacesAndNewlines)
-                    }
+                    model.updateEndpoint(baseURL: draftBaseURL, model: draftModel)
                 }
                 .disabled(
                     draftBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

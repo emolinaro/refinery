@@ -98,10 +98,13 @@ public struct EndpointClient {
             delegate: RedirectRejectingDelegate(),
             delegateQueue: nil
         )
-        defer { session.finishTasksAndInvalidate() }
+        defer { session.invalidateAndCancel() }
         let (bytes, response) = try await session.bytes(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw EndpointError.network("not an HTTP response")
+        }
+        guard (200...299).contains(http.statusCode) else {
+            throw EndpointError.httpStatus(http.statusCode)
         }
         if response.expectedContentLength > Int64(maximumResponseBytes) {
             throw EndpointError.responseTooLarge
