@@ -289,7 +289,7 @@ final class EndpointClientTests: XCTestCase {
     }
 
     func testIncompleteCompletionSurfacesError() async {
-        for reason in ["length", "content_filter"] {
+        for reason in ["length", "content_filter", "tool_calls", "function_call"] {
             let response: EndpointClient.Transport = { request in
                 let data = Data("{\"choices\":[{\"message\":{\"content\":\"Partial\"},\"finish_reason\":\"\(reason)\"}]}".utf8)
                 return (data, HTTPURLResponse(
@@ -398,8 +398,8 @@ final class KeychainStoreTests: XCTestCase {
 /// separately in `testStartInvokesCompletionWhenTapCannotBeCreated`.
 @MainActor
 final class RecordingSessionTests: XCTestCase {
-    private func keyEvent(keyCode: CGKeyCode, flags: CGEventFlags = []) -> CGEvent {
-        let event = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true)!
+    private func keyEvent(keyCode: CGKeyCode, flags: CGEventFlags = [], keyDown: Bool = true) -> CGEvent {
+        let event = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: keyDown)!
         event.flags = flags
         return event
     }
@@ -483,6 +483,9 @@ final class RecordingSessionTests: XCTestCase {
     func testHandleCapturesCommandOptionCombo() {
         let (session, box) = makeSession()
         session.handle(keyEvent(keyCode: CGKeyCode(kVK_ANSI_J), flags: [.maskCommand, .maskAlternate]))
+        XCTAssertNil(box.value)
+        XCTAssertTrue(HotkeyRecorder.currentSession === session)
+        session.handle(keyEvent(keyCode: CGKeyCode(kVK_ANSI_J), keyDown: false))
         XCTAssertEqual(box.value?.0, UInt32(kVK_ANSI_J))
         XCTAssertEqual(box.value?.1, UInt32(cmdKey | optionKey))
         XCTAssertEqual(box.value?.2, "⌥⌘J")
@@ -492,6 +495,9 @@ final class RecordingSessionTests: XCTestCase {
     func testHandleEscapeCancelsWithoutRebinding() {
         let (session, box) = makeSession()
         session.handle(keyEvent(keyCode: CGKeyCode(kVK_Escape), flags: [.maskCommand]))
+        XCTAssertNil(box.value)
+        XCTAssertTrue(HotkeyRecorder.currentSession === session)
+        session.handle(keyEvent(keyCode: CGKeyCode(kVK_Escape), keyDown: false))
         XCTAssertNil(box.value?.0)
         XCTAssertEqual(box.value?.2, "Cancelled.")
         XCTAssertNil(HotkeyRecorder.currentSession)
@@ -500,6 +506,9 @@ final class RecordingSessionTests: XCTestCase {
     func testHandleReservedComboIsRejected() {
         let (session, box) = makeSession()
         session.handle(keyEvent(keyCode: CGKeyCode(kVK_ANSI_C), flags: [.maskCommand]))
+        XCTAssertNil(box.value)
+        XCTAssertTrue(HotkeyRecorder.currentSession === session)
+        session.handle(keyEvent(keyCode: CGKeyCode(kVK_ANSI_C), keyDown: false))
         XCTAssertNil(box.value?.0)
         XCTAssertEqual(box.value?.2, "That combination conflicts with a common system shortcut.")
         XCTAssertNil(HotkeyRecorder.currentSession)
@@ -587,6 +596,25 @@ final class AppModelHotkeyTests: XCTestCase {
         XCTAssertEqual(hotkeys.registrations.map(\.1), Array(repeating: UInt32(cmdKey | optionKey), count: 3))
         XCTAssertEqual(model.settings.hotkeyKeyCode, kVK_ANSI_P)
         XCTAssertEqual(hotkeys.activeKeyCode, UInt32(kVK_ANSI_P))
+        XCTAssertTrue(hotkeys.isTriggerSuppressed)
+
+        model.resumeHotkey()
+
+        XCTAssertFalse(hotkeys.isTriggerSuppressed)
+    }
+
+    func testSuccessfulAdoptionRemainsSuppressedUntilExplicitlyResumed() {
+        let hotkeys = StubHotkeyManager(registrationResults: [true, true])
+        let model = AppModel(
+            settings: AppSettings(baseURL: "https://api.example.com/v1", model: "test-model"),
+            hotkeyCenter: hotkeys
+        )
+
+        model.suspendHotkey()
+        XCTAssertTrue(model.adoptHotkey(keyCode: kVK_ANSI_J, modifiers: cmdKey | optionKey))
+
+        XCTAssertTrue(hotkeys.isTriggerSuppressed)
+        model.resumeHotkey()
         XCTAssertFalse(hotkeys.isTriggerSuppressed)
     }
 
@@ -615,6 +643,7 @@ final class AppModelHotkeyTests: XCTestCase {
             hotkeyCenter: StubHotkeyManager(registrationResults: [true]),
             persistSettings: { persisted.append($0) }
         )
+        model.lastOutcome = .failure("Settings are unreadable. Re-open Refinery settings to reconfigure the endpoint.")
 
         XCTAssertTrue(model.updateEndpoint(baseURL: " https://api.example.com/v1 ", model: " model "))
 
@@ -622,6 +651,7 @@ final class AppModelHotkeyTests: XCTestCase {
         XCTAssertEqual(model.settings.baseURL, "https://api.example.com/v1")
         XCTAssertEqual(model.settings.model, "model")
         XCTAssertEqual(persisted, [model.settings])
+        XCTAssertNil(model.lastOutcome)
     }
 
     func testInvalidEndpointReconfigurationLeavesUnreadableStateUntouched() {
@@ -667,6 +697,24 @@ final class AppSettingsTests: XCTestCase {
             )
             settings.save(to: defaults)
 
+            XCTAssertThrowsError(try AppSettings.load(from: defaults)) {
+                XCTAssertTrue($0 is AppSettings.LoadError)
+            }
+        }
+    }
+
+    func testUnsafePersistedSettingsAreUnreadable() {
+        let unsafeSettings = [
+            AppSettings(baseURL: "https://api.example.com/v1", model: "test-model", hotkeyKeyCode: 0, hotkeyModifiers: 0),
+            AppSettings(baseURL: "https://api.example.com/v1", model: "test-model", hotkeyKeyCode: 35, hotkeyModifiers: shiftKey),
+            AppSettings(baseURL: "https://api.example.com/v1", model: "test-model", hotkeyKeyCode: 35, hotkeyModifiers: cmdKey | 1),
+            AppSettings(baseURL: "https://api.example.com/v1", model: "test-model", hotkeyKeyCode: 128, hotkeyModifiers: cmdKey),
+            AppSettings(baseURL: "https://api.example.com/v1", model: "   ", hotkeyKeyCode: 35, hotkeyModifiers: cmdKey),
+        ]
+
+        for settings in unsafeSettings {
+            let defaults = makeDefaults()
+            settings.save(to: defaults)
             XCTAssertThrowsError(try AppSettings.load(from: defaults)) {
                 XCTAssertTrue($0 is AppSettings.LoadError)
             }
@@ -746,12 +794,15 @@ private final class StubHotkeyManager: HotkeyManaging {
         let result = registrationResults.removeFirst()
         if result {
             activeKeyCode = keyCode
-            isTriggerSuppressed = false
         }
         return result
     }
 
     func suspend() {
         isTriggerSuppressed = true
+    }
+
+    func resume() {
+        isTriggerSuppressed = false
     }
 }

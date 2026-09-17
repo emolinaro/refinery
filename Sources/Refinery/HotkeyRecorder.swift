@@ -167,6 +167,8 @@ final class RecordingSession {
     private var runLoopSource: CFRunLoopSource?
     private var observers: [NSObjectProtocol] = []
     private var finished = false
+    private var pendingResult: (keyCode: UInt32?, modifiers: UInt32?, reason: String)?
+    private var pendingKeyCode: UInt32?
 
     convenience init(completion: @escaping (UInt32?, UInt32?, String) -> Void) {
         self.init(
@@ -199,6 +201,7 @@ final class RecordingSession {
         guard !finished else { return }
 
         let mask = CGEventMask(1 << CGEventType.keyDown.rawValue)
+            | CGEventMask(1 << CGEventType.keyUp.rawValue)
         let callback: CGEventTapCallBack = { _, _, event, userInfo in
             guard let userInfo else { return Unmanaged.passUnretained(event) }
             let session = Unmanaged<RecordingSession>.fromOpaque(userInfo).takeUnretainedValue()
@@ -262,8 +265,21 @@ final class RecordingSession {
     func handle(_ event: CGEvent) {
         let keyCode = UInt32(event.getIntegerValueField(.keyboardEventKeycode))
 
+        if event.type == .keyUp {
+            guard keyCode == pendingKeyCode, let pendingResult else { return }
+            finish(
+                keyCode: pendingResult.keyCode,
+                modifiers: pendingResult.modifiers,
+                reason: pendingResult.reason
+            )
+            return
+        }
+
+        guard event.type == .keyDown else { return }
+
         if Int(keyCode) == kVK_Escape {
-            finish(keyCode: nil, modifiers: nil, reason: "Cancelled.")
+            pendingKeyCode = keyCode
+            pendingResult = (nil, nil, "Cancelled.")
             return
         }
 
@@ -274,16 +290,14 @@ final class RecordingSession {
 
         let modifiers = HotkeyRecorder.carbonModifiers(from: event.flags)
         if HotkeyRecorder.isReservedCombo(keyCode: keyCode, modifiers: modifiers) {
-            finish(
-                keyCode: nil,
-                modifiers: nil,
-                reason: "That combination conflicts with a common system shortcut."
-            )
+            pendingKeyCode = keyCode
+            pendingResult = (nil, nil, "That combination conflicts with a common system shortcut.")
             return
         }
 
         let display = HotkeyRecorder.displayString(keyCode: keyCode, modifiers: modifiers)
-        finish(keyCode: keyCode, modifiers: modifiers, reason: display)
+        pendingKeyCode = keyCode
+        pendingResult = (keyCode, modifiers, display)
     }
 
     private func finish(keyCode: UInt32?, modifiers: UInt32?, reason: String) {

@@ -78,6 +78,7 @@ public final class AppModel: ObservableObject {
         settings.model = trimmedModel
         settingsAreReadable = true
         persistSettings(settings)
+        lastOutcome = nil
         return true
     }
 
@@ -99,6 +100,10 @@ public final class AppModel: ObservableObject {
 
     func suspendHotkey() {
         hotkeyCenter.suspend()
+    }
+
+    func resumeHotkey() {
+        hotkeyCenter.resume()
     }
 
     /// Registers a newly recorded hotkey, keeping the previous registration

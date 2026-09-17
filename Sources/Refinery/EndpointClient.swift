@@ -202,7 +202,7 @@ public struct EndpointClient {
         guard let choice = decoded.choices?.first else {
             throw EndpointError.emptyCompletion
         }
-        if let reason = choice.finishReason, ["length", "content_filter"].contains(reason) {
+        if let reason = choice.finishReason, reason != "stop" {
             throw EndpointError.incompleteCompletion(reason)
         }
         guard let content = choice.message?.content,

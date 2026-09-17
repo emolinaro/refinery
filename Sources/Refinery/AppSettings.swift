@@ -1,4 +1,5 @@
 import Foundation
+import Carbon.HIToolbox
 
 /// User preferences persisted via `UserDefaults`.
 ///
@@ -31,8 +32,13 @@ struct AppSettings: Codable, Equatable {
         }
         do {
             let settings = try JSONDecoder().decode(AppSettings.self, from: data)
-            guard UInt32(exactly: settings.hotkeyKeyCode) != nil,
-                  UInt32(exactly: settings.hotkeyModifiers) != nil else {
+            let allowedModifiers = UInt32(cmdKey | optionKey | controlKey | shiftKey)
+            let requiredModifiers = UInt32(cmdKey | optionKey | controlKey)
+            guard let keyCode = UInt32(exactly: settings.hotkeyKeyCode), keyCode <= 127,
+                  let modifiers = UInt32(exactly: settings.hotkeyModifiers),
+                  modifiers & ~allowedModifiers == 0,
+                  modifiers & requiredModifiers != 0,
+                  !settings.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw LoadError.unreadable
             }
             return settings

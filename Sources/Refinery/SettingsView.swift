@@ -56,6 +56,7 @@ struct SettingsView: View {
                         recordingHotkey = true
                         model.suspendHotkey()
                         HotkeyRecorder.start { keyCode, modifiers, display in
+                            defer { model.resumeHotkey() }
                             recordingHotkey = false
                             if let keyCode, let modifiers {
                                 if model.adoptHotkey(keyCode: Int(keyCode), modifiers: Int(modifiers)) {

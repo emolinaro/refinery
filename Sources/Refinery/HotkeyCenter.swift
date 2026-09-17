@@ -6,6 +6,7 @@ protocol HotkeyManaging: AnyObject {
     var onTrigger: (() -> Void)? { get set }
     func register(keyCode: UInt32, modifiers: UInt32) -> Bool
     func suspend()
+    func resume()
 }
 
 /// A system-wide keyboard shortcut that fires with text selected in any app.
@@ -35,7 +36,6 @@ final class HotkeyCenter: HotkeyManaging {
     @discardableResult
     func register(keyCode: UInt32, modifiers: UInt32) -> Bool {
         if hotkeyRef != nil, keyCode == currentKeyCode, modifiers == currentModifiers {
-            isTriggerSuppressed = false
             return true
         }
 
@@ -57,12 +57,15 @@ final class HotkeyCenter: HotkeyManaging {
         hotkeyRef = newRef
         currentKeyCode = keyCode
         currentModifiers = modifiers
-        isTriggerSuppressed = false
         return true
     }
 
     func suspend() {
         isTriggerSuppressed = true
+    }
+
+    func resume() {
+        isTriggerSuppressed = false
     }
 
     /// Fires the trigger on the main thread.
