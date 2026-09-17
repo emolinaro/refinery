@@ -61,6 +61,41 @@ final class PresetPromptBuilderTests: XCTestCase {
 }
 
 @MainActor
+final class HotkeyCenterTests: XCTestCase {
+    func testSuppressedEventStaysSuppressedAfterResume() async {
+        let center = HotkeyCenter()
+        var triggerCount = 0
+        center.onTrigger = { triggerCount += 1 }
+        center.suspend()
+
+        center.handleMatchedHotkeyEvent()
+        center.resume()
+        await drainMainQueue()
+
+        XCTAssertEqual(triggerCount, 0)
+    }
+
+    func testUnsuppressedEventDispatchesTrigger() async {
+        let center = HotkeyCenter()
+        var triggerCount = 0
+        center.onTrigger = { triggerCount += 1 }
+
+        center.handleMatchedHotkeyEvent()
+        await drainMainQueue()
+
+        XCTAssertEqual(triggerCount, 1)
+    }
+
+    private func drainMainQueue() async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async {
+                continuation.resume()
+            }
+        }
+    }
+}
+
+@MainActor
 final class HotkeyRecorderTests: XCTestCase {
     func testDefaultHotkeyComboIsAccepted() {
         let defaultModifiers = UInt32(cmdKey | optionKey)
@@ -374,7 +409,7 @@ final class KeychainStoreTests: XCTestCase {
         }
     }
 
-    func testAPIKeyQueryUsesEndpointHostAsAccount() throws {
+    func testAPIKeyQueryUsesCanonicalEndpointAsAccount() throws {
         var accounts: [String] = []
         let copy: KeychainStore.CopyMatching = { query, _ in
             let values = query as NSDictionary
@@ -382,10 +417,19 @@ final class KeychainStoreTests: XCTestCase {
             return errSecItemNotFound
         }
 
-        _ = try KeychainStore.readAPIKey(for: URL(string: "https://api.first.example/v1")!, copyMatching: copy)
-        _ = try KeychainStore.readAPIKey(for: URL(string: "https://API.SECOND.EXAMPLE/v2")!, copyMatching: copy)
+        _ = try KeychainStore.readAPIKey(for: URL(string: "https://API.EXAMPLE/v1/")!, copyMatching: copy)
+        _ = try KeychainStore.readAPIKey(for: URL(string: "https://api.example:443/v1")!, copyMatching: copy)
+        _ = try KeychainStore.readAPIKey(for: URL(string: "https://api.example:8443/v1")!, copyMatching: copy)
+        _ = try KeychainStore.readAPIKey(for: URL(string: "https://api.example/v2")!, copyMatching: copy)
+        _ = try KeychainStore.readAPIKey(for: URL(string: "http://api.example/v1")!, copyMatching: copy)
 
-        XCTAssertEqual(accounts, ["api.first.example", "api.second.example"])
+        XCTAssertEqual(accounts, [
+            "https://api.example:443/v1",
+            "https://api.example:443/v1",
+            "https://api.example:8443/v1",
+            "https://api.example:443/v2",
+            "http://api.example:80/v1",
+        ])
     }
 }
 
@@ -509,6 +553,17 @@ final class RecordingSessionTests: XCTestCase {
         XCTAssertNil(box.value)
         XCTAssertTrue(HotkeyRecorder.currentSession === session)
         session.handle(keyEvent(keyCode: CGKeyCode(kVK_ANSI_C), keyDown: false))
+        XCTAssertNil(box.value?.0)
+        XCTAssertEqual(box.value?.2, "That combination conflicts with a common system shortcut.")
+        XCTAssertNil(HotkeyRecorder.currentSession)
+    }
+
+    func testFirstQualifyingKeyDownRemainsPendingUntilItsKeyUp() {
+        let (session, box) = makeSession()
+        session.handle(keyEvent(keyCode: CGKeyCode(kVK_ANSI_C), flags: [.maskCommand]))
+        session.handle(keyEvent(keyCode: CGKeyCode(kVK_ANSI_J), flags: [.maskCommand]))
+        session.handle(keyEvent(keyCode: CGKeyCode(kVK_ANSI_C), keyDown: false))
+
         XCTAssertNil(box.value?.0)
         XCTAssertEqual(box.value?.2, "That combination conflicts with a common system shortcut.")
         XCTAssertNil(HotkeyRecorder.currentSession)
@@ -709,6 +764,8 @@ final class AppSettingsTests: XCTestCase {
             AppSettings(baseURL: "https://api.example.com/v1", model: "test-model", hotkeyKeyCode: 35, hotkeyModifiers: shiftKey),
             AppSettings(baseURL: "https://api.example.com/v1", model: "test-model", hotkeyKeyCode: 35, hotkeyModifiers: cmdKey | 1),
             AppSettings(baseURL: "https://api.example.com/v1", model: "test-model", hotkeyKeyCode: 128, hotkeyModifiers: cmdKey),
+            AppSettings(baseURL: "https://api.example.com/v1", model: "test-model", hotkeyKeyCode: kVK_ANSI_C, hotkeyModifiers: cmdKey),
+            AppSettings(baseURL: "https://api.example.com/v1", model: "test-model", hotkeyKeyCode: kVK_Command, hotkeyModifiers: cmdKey),
             AppSettings(baseURL: "https://api.example.com/v1", model: "   ", hotkeyKeyCode: 35, hotkeyModifiers: cmdKey),
         ]
 

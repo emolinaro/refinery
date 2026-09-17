@@ -68,6 +68,13 @@ final class HotkeyCenter: HotkeyManaging {
         isTriggerSuppressed = false
     }
 
+    func handleMatchedHotkeyEvent() {
+        guard !isTriggerSuppressed else { return }
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated { self?.fire() }
+        }
+    }
+
     /// Fires the trigger on the main thread.
     private func fire() {
         guard !isTriggerSuppressed else { return }
@@ -92,8 +99,8 @@ final class HotkeyCenter: HotkeyManaging {
             )
             if status == noErr, hotkeyID.signature == HotkeyCenter.signatureValue {
                 let center = Unmanaged<HotkeyCenter>.fromOpaque(userData).takeUnretainedValue()
-                DispatchQueue.main.async {
-                    MainActor.assumeIsolated { center.fire() }
+                MainActor.assumeIsolated {
+                    center.handleMatchedHotkeyEvent()
                 }
             }
             return noErr

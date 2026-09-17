@@ -38,7 +38,7 @@ enum HotkeyRecorder {
 
     /// True for combinations that would intercept universal shortcuts like
     /// copy, paste, cut, undo, select-all, space or tab.
-    static func isReservedCombo(keyCode: UInt32, modifiers: UInt32) -> Bool {
+    nonisolated static func isReservedCombo(keyCode: UInt32, modifiers: UInt32) -> Bool {
         guard modifiers & UInt32(cmdKey) != 0 else { return false }
         let reserved: Set<UInt32> = [
             UInt32(kVK_ANSI_C), UInt32(kVK_ANSI_V), UInt32(kVK_ANSI_X),
@@ -46,6 +46,27 @@ enum HotkeyRecorder {
             UInt32(kVK_Tab),
         ]
         return reserved.contains(keyCode)
+    }
+
+    nonisolated static func isValidCombo(keyCode: UInt32, modifiers: UInt32) -> Bool {
+        let allowedModifiers = UInt32(cmdKey | optionKey | controlKey | shiftKey)
+        let requiredModifiers = UInt32(cmdKey | optionKey | controlKey)
+        return keyCode <= 127
+            && !isModifierKeyCode(keyCode)
+            && modifiers & ~allowedModifiers == 0
+            && modifiers & requiredModifiers != 0
+            && !isReservedCombo(keyCode: keyCode, modifiers: modifiers)
+    }
+
+    nonisolated fileprivate static func isModifierKeyCode(_ keyCode: UInt32) -> Bool {
+        switch Int(keyCode) {
+        case kVK_Shift, kVK_RightShift, kVK_Command, kVK_RightCommand,
+             kVK_Option, kVK_RightOption, kVK_Control, kVK_RightControl,
+             kVK_CapsLock, kVK_Function:
+            return true
+        default:
+            return false
+        }
     }
 
     /// Converts CoreGraphics event flags to a Carbon modifier mask.
@@ -276,6 +297,7 @@ final class RecordingSession {
         }
 
         guard event.type == .keyDown else { return }
+        guard pendingResult == nil else { return }
 
         if Int(keyCode) == kVK_Escape {
             pendingKeyCode = keyCode
@@ -283,7 +305,7 @@ final class RecordingSession {
             return
         }
 
-        if isModifierKeyCode(keyCode) { return }
+        if HotkeyRecorder.isModifierKeyCode(keyCode) { return }
 
         let required: CGEventFlags = [.maskCommand, .maskAlternate, .maskControl]
         if event.flags.intersection(required).isEmpty { return }
@@ -322,16 +344,6 @@ final class RecordingSession {
         observers.removeAll()
         if HotkeyRecorder.currentSession === self {
             HotkeyRecorder.currentSession = nil
-        }
-    }
-
-    private func isModifierKeyCode(_ keyCode: UInt32) -> Bool {
-        switch Int(keyCode) {
-        case kVK_Shift, kVK_RightShift, kVK_Command, kVK_RightCommand,
-             kVK_Option, kVK_RightOption, kVK_Control, kVK_RightControl:
-            return true
-        default:
-            return false
         }
     }
 

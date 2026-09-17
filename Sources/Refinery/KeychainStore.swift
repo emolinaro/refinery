@@ -4,7 +4,7 @@ import Security
 /// Stores and reads the endpoint API key in the macOS Keychain.
 ///
 /// The key never lives in plain files or UserDefaults; only a Keychain item
-/// with a service/account pair scoped to the endpoint host. All access goes
+/// with a service/account pair scoped to the endpoint. All access goes
 /// through this type so reading code never handles raw key bytes outside a request.
 enum KeychainStore {
     private static let service = "com.refinery.app.endpoint-key"
@@ -24,7 +24,7 @@ enum KeychainStore {
         }
     }
 
-    /// Saves (creates or updates) the API key for the endpoint host.
+    /// Saves (creates or updates) the API key for the endpoint.
     static func saveAPIKey(_ key: String, for baseURL: URL) throws {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
         let data = Data(trimmed.utf8)
@@ -54,7 +54,7 @@ enum KeychainStore {
         }
     }
 
-    /// Reads the saved API key for the endpoint host, if any.
+    /// Reads the saved API key for the endpoint, if any.
     static func readAPIKey(
         for baseURL: URL,
         copyMatching: CopyMatching = SecItemCopyMatching
@@ -81,7 +81,22 @@ enum KeychainStore {
     }
 
     private static func account(for baseURL: URL) -> String? {
-        guard let host = baseURL.host?.lowercased(), !host.isEmpty else { return nil }
-        return host
+        guard let scheme = baseURL.scheme?.lowercased(),
+              let host = baseURL.host?.lowercased(), !host.isEmpty else { return nil }
+        let defaultPort: Int
+        switch scheme {
+        case "http": defaultPort = 80
+        case "https": defaultPort = 443
+        default: return nil
+        }
+        let endpointHost = host.contains(":") ? "[\(host)]" : host
+        var path = baseURL.path
+        while path.count > 1, path.hasSuffix("/") {
+            path.removeLast()
+        }
+        if path.isEmpty {
+            path = "/"
+        }
+        return "\(scheme)://\(endpointHost):\(baseURL.port ?? defaultPort)\(path)"
     }
 }
