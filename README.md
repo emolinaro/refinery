@@ -1,19 +1,90 @@
 # Refinery
 
-A native macOS app that polishes selected text through your own
+A native macOS menu-bar app that polishes selected text through your own
 OpenAI-compatible endpoint via a global hotkey. Select a sentence anywhere,
 press the hotkey, get the refined version on your clipboard - no browser
 round-trip.
 
-## Status
+## How it works
 
-Early development. Intake decisions (2026-09-16):
+1. Select text in any app.
+2. Press the global hotkey (default ⌥⌘P).
+3. Refinery reads the selection (Accessibility API), sends it to your
+   configured OpenAI-compatible endpoint with the chosen preset, and writes
+   the polished text to the clipboard, ready to paste over the original.
 
-- Global hotkey: select text in any app, polished result lands on the clipboard
-- Configurable OpenAI-compatible endpoint (base URL, model, API key stored locally)
-- Style presets: fixed polish, concise, formal, friendly email, language-aware
-  (keeps Danish/English as written), and a custom one-off prompt mode
+Six presets, picked from the menu-bar icon:
+
+- **Polish** - fix grammar, spelling and clarity, keep meaning and language
+- **Concise** - same message, fewer words
+- **Formal** - neutral, professional register
+- **Friendly Email** - warm, conversational email tone
+- **Language-Aware** - auto-detect Danish or English and polish in that language
+- **Custom…** - type a one-off instruction for this run
+
+## Requirements
+
+- macOS 13 or later
+- Xcode command-line tools (Swift 6.1 or later)
+
+## Building and running
+
+```sh
+swift build
+swift run Refinery
+```
+
+The app runs as a menu-bar item (wand-and-stars icon). Open it to pick a
+preset, configure the endpoint, and record the hotkey.
+
+## Permissions
+
+Refinery needs the **Accessibility** permission to read selected text in other
+apps and record a global hotkey. On first use the app surfaces this and macOS
+shows its standard permission prompt: grant Refinery (or your terminal, when
+running from one) access under System Settings -> Privacy & Security ->
+Accessibility.
+
+## Settings
+
+From the menu-bar icon you can configure:
+
+- **Base URL** - your OpenAI-compatible endpoint. The first-run value
+  `https://api.ucloud-ai.com/v1` is a private-deployment example; replace it
+  with your own HTTPS endpoint. Plain HTTP is accepted only for localhost
+- **Model** - model name sent to chat completions. The first-run value
+  `ucloud-ai` matches that private-deployment example; replace it as needed
+- **API Key** - stored only in the macOS Keychain, never in plain files, and
+  kept separately for each endpoint URL
+- **Hotkey** - record a ⌘/⌥/⌃-based combination, except common Command
+  shortcuts C, V, X, Z, A, Space, and Tab. Refinery requests exclusive
+  registration, but macOS cannot report an existing non-exclusive owner of the
+  same shortcut. Refinery may accept that collision and receive the shortcut
+  while the other app is suppressed, so verify a new shortcut after recording
+
+Refinery sends `POST {baseURL}/chat/completions` and accepts the first choice
+only when its `finish_reason` is `stop`. Incomplete or malformed responses are
+not copied to the clipboard.
 
 ## Development
 
-Swift / native macOS. Details follow as the first lanes land.
+```sh
+swift build     # build
+swift test      # unit tests for the core app components
+```
+
+End-to-end smoke test (mock endpoint, dummy key):
+
+```sh
+./Scripts/e2e-smoke.sh polish
+./Scripts/e2e-smoke.sh languageAware
+./Scripts/e2e-smoke.sh customOneOff "translate to pirate speak"
+```
+
+The smoke test starts a local mock OpenAI-compatible server, runs the real
+request/parse/clipboard pipeline against it, and prints what landed on the
+clipboard. It never contacts a real endpoint and never uses a real API key.
+
+## License
+
+MIT - see [LICENSE](LICENSE).
