@@ -83,13 +83,6 @@ final class AppModel: ObservableObject {
             return
         }
 
-        // Custom preset requires a typed prompt; the panel returns nil when cancelled.
-        var customPrompt: String?
-        if settings.preset == .customOneOff {
-            guard let typed = CustomPromptPanel.prompt(), !typed.isEmpty else { return }
-            customPrompt = typed
-        }
-
         guard let url = baseURL, let scheme = url.scheme?.lowercased(),
               scheme == "http" || scheme == "https" else {
             lastOutcome = .failure(EndpointError.invalidBaseURL.localizedDescription)
@@ -99,6 +92,13 @@ final class AppModel: ObservableObject {
         guard let key = KeychainStore.readAPIKey() else {
             lastOutcome = .failure(EndpointError.missingAPIKey.localizedDescription)
             return
+        }
+
+        // Custom preset requires a typed prompt; the panel returns nil when cancelled.
+        var customPrompt: String?
+        if settings.preset == .customOneOff {
+            guard let typed = CustomPromptPanel.prompt(), !typed.isEmpty else { return }
+            customPrompt = typed
         }
 
         isRunning = true
