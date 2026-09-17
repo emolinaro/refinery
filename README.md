@@ -56,7 +56,8 @@ From the menu-bar icon you can configure:
 - **Model** - model name sent to chat completions (default suggestion:
   `ucloud-ai`)
 - **API Key** - stored only in the macOS Keychain, never in plain files
-- **Hotkey** - record any ⌘/⌥/⌃-based combination
+- **Hotkey** - record a ⌘/⌥/⌃-based combination, except common Command
+  shortcuts C, V, X, Z, A, Space, and Tab
 
 ## Development
 

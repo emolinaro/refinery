@@ -24,7 +24,6 @@ enum SelectionReader {
 
         // Fallback path: selected text range applied to the element's full value.
         if let selectedRange = rangeValue(axElement, kAXSelectedTextRangeAttribute as CFString) {
-            let range = selectedRange
             var value: CFTypeRef?
             let valueResult = AXUIElementCopyAttributeValue(
                 axElement,
@@ -34,12 +33,12 @@ enum SelectionReader {
             if valueResult == .success, let value,
                AXUIElementGetTypeID() != CFGetTypeID(value) {
                 if let text = value as? String {
-                    let nsRange = NSRange(location: range.location, length: range.length)
+                    let nsRange = NSRange(location: selectedRange.location, length: selectedRange.length)
                     if let fastRange = Range(nsRange, in: text) {
                         return String(text[fastRange])
                     }
                 } else if let attributed = value as? NSAttributedString {
-                    let nsRange = NSRange(location: range.location, length: range.length)
+                    let nsRange = NSRange(location: selectedRange.location, length: selectedRange.length)
                     if let fastRange = Range(nsRange, in: attributed.string) {
                         return String(attributed.string[fastRange])
                     }

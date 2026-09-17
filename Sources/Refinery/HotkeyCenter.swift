@@ -51,6 +51,13 @@ final class HotkeyCenter {
         return true
     }
 
+    func suspend() {
+        if let hotkeyRef {
+            UnregisterEventHotKey(hotkeyRef)
+            self.hotkeyRef = nil
+        }
+    }
+
     /// Fires the trigger on the main thread.
     private func fire() {
         onTrigger?()

@@ -12,15 +12,22 @@ set -euo pipefail
 
 PRESET="${1:-polish}"
 CUSTOM="${2:-}"
-PORT=18765
-MOCK_BODY='{"choices":[{"message":{"role":"assistant","content":"MOCK POLISHED OUTPUT"}}]}'
+TOKEN="refinery-smoke-$$-$RANDOM"
+MOCK_TEXT="MOCK POLISHED OUTPUT $TOKEN"
+MOCK_BODY="{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"$MOCK_TEXT\"}}]}"
+PORT_FILE="$PWD/.refinery-smoke-port.$$"
 
 echo "== starting mock endpoint =="
-python3 - "$PORT" "$MOCK_BODY" "$PRESET" "$CUSTOM" <<'PY' &
+python3 - "$PORT_FILE" "$MOCK_BODY" "$PRESET" "$CUSTOM" "$TOKEN" <<'PY' &
 import sys, http.server, json
-port = int(sys.argv[1]); body = sys.argv[2].encode()
-expected_preset = sys.argv[3]; custom = sys.argv[4]
+port_file = sys.argv[1]; body = sys.argv[2].encode()
+expected_preset = sys.argv[3]; custom = sys.argv[4]; token = sys.argv[5]
 class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path != f"/health/{token}": self.send_error(404); return
+        response = token.encode()
+        self.send_response(200); self.send_header("Content-Length", str(len(response)))
+        self.end_headers(); self.wfile.write(response)
     def do_POST(self):
         n = int(self.headers.get("Content-Length", 0)); req = self.rfile.read(n)
         errors = []
@@ -51,18 +58,38 @@ class H(http.server.BaseHTTPRequestHandler):
         self.send_response(200); self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
     def log_message(self, *a): pass
-http.server.HTTPServer(("127.0.0.1", port), H).serve_forever()
+server = http.server.HTTPServer(("127.0.0.1", 0), H)
+with open(port_file, "w") as file: file.write(str(server.server_port))
+server.serve_forever()
 PY
 MOCK_PID=$!
-trap "kill $MOCK_PID 2>/dev/null" EXIT
-sleep 1
+trap 'kill "$MOCK_PID" 2>/dev/null || true; rm -f "$PORT_FILE"' EXIT
+
+for _ in {1..50}; do
+    kill -0 "$MOCK_PID" 2>/dev/null || { echo "mock endpoint exited before becoming ready" >&2; exit 1; }
+    [[ -s "$PORT_FILE" ]] && break
+    sleep 0.1
+done
+[[ -s "$PORT_FILE" ]] || { echo "mock endpoint did not become ready" >&2; exit 1; }
+PORT="$(<"$PORT_FILE")"
+HEALTH="$(python3 - "$PORT" "$TOKEN" <<'PY'
+import sys, urllib.request
+print(urllib.request.urlopen(f"http://127.0.0.1:{sys.argv[1]}/health/{sys.argv[2]}", timeout=2).read().decode())
+PY
+)"
+[[ "$HEALTH" == "$TOKEN" ]] || { echo "mock endpoint ownership check failed" >&2; exit 1; }
 
 echo "== launching Refinery e2e harness =="
-E2E_BASE_URL="http://127.0.0.1:$PORT/v1" \
+OUTPUT="$(E2E_BASE_URL="http://127.0.0.1:$PORT/v1" \
 E2E_MODEL="mock-model" \
 E2E_PRESET="$PRESET" \
 E2E_CUSTOM_PROMPT="$CUSTOM" \
 E2E_INPUT="this is a smal test of refinery" \
 E2E_DUMMY_KEY="dummy-key-for-tests" \
 E2E_TIMEOUT=5 \
-swift run RefineryE2E 2>&1
+swift run RefineryE2E 2>&1)"
+printf '%s\n' "$OUTPUT"
+[[ "$OUTPUT" == *"E2E: polished and copied: $MOCK_TEXT"* ]] || {
+    echo "unexpected smoke-test response" >&2
+    exit 1
+}

@@ -30,7 +30,12 @@ struct AppSettings: Codable, Equatable {
             return fallback
         }
         do {
-            return try JSONDecoder().decode(AppSettings.self, from: data)
+            let settings = try JSONDecoder().decode(AppSettings.self, from: data)
+            guard UInt32(exactly: settings.hotkeyKeyCode) != nil,
+                  UInt32(exactly: settings.hotkeyModifiers) != nil else {
+                throw LoadError.unreadable
+            }
+            return settings
         } catch {
             throw LoadError.unreadable
         }

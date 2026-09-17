@@ -5,8 +5,7 @@ import Security
 @testable import Refinery
 
 final class PresetPromptBuilderTests: XCTestCase {
-    func testExactlySixPresets() {
-        XCTAssertEqual(Preset.allCases.count, 6)
+    func testPresetCases() {
         XCTAssertEqual(
             Set(Preset.allCases),
             [.polish, .concise, .formal, .friendlyEmail, .languageAware, .customOneOff]
@@ -143,7 +142,7 @@ final class EndpointClientTests: XCTestCase {
             baseURL: URL(string: "https://api.example.com/v1")!,
             model: "test-model",
             timeout: 5,
-            transport: .send(recorder.send)
+            transport: recorder.send
         )
 
         let result = try await client.polish(
@@ -183,7 +182,7 @@ final class EndpointClientTests: XCTestCase {
         let client = EndpointClient(
             baseURL: URL(string: "http://api.example.com/v1")!,
             model: "test-model",
-            transport: .send(recorder.send)
+            transport: recorder.send
         )
         do {
             _ = try await client.polish("text", preset: .polish, apiKey: "dummy")
@@ -203,7 +202,7 @@ final class EndpointClientTests: XCTestCase {
     }
 
     func testPolishPreservesCompletionWhitespace() async throws {
-        let response = EndpointClient.Transport.send { request in
+        let response: EndpointClient.Transport = { request in
             let data = Data(#"{"choices":[{"message":{"content":"  indented\n"}}]}"#.utf8)
             return (data, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
         }
@@ -221,7 +220,7 @@ final class EndpointClientTests: XCTestCase {
         let client = EndpointClient(
             baseURL: URL(string: "https://api.example.com/v1")!,
             model: "test-model",
-            transport: .send(recorder.send)
+            transport: recorder.send
         )
         do {
             _ = try await client.polish("text", preset: .customOneOff, customPrompt: " ", apiKey: "dummy")
@@ -235,7 +234,7 @@ final class EndpointClientTests: XCTestCase {
     }
 
     func testHTTPErrorSurfacesStatus() async {
-        let failing = EndpointClient.Transport.send { _ in
+        let failing: EndpointClient.Transport = { _ in
             (Data("nope".utf8), HTTPURLResponse(
                 url: URL(string: "https://api.example.com/v1/chat/completions")!,
                 statusCode: 500,
@@ -263,7 +262,7 @@ final class EndpointClientTests: XCTestCase {
     }
 
     func testEmptyCompletionSurfacesError() async {
-        let empty = EndpointClient.Transport.send { _ in
+        let empty: EndpointClient.Transport = { _ in
             (Data(#"{"choices":[]}"#.utf8), HTTPURLResponse(
                 url: URL(string: "https://api.example.com/v1/chat/completions")!,
                 statusCode: 200,
@@ -289,7 +288,7 @@ final class EndpointClientTests: XCTestCase {
 
     func testIncompleteCompletionSurfacesError() async {
         for reason in ["length", "content_filter"] {
-            let response = EndpointClient.Transport.send { request in
+            let response: EndpointClient.Transport = { request in
                 let data = Data("{\"choices\":[{\"message\":{\"content\":\"Partial\"},\"finish_reason\":\"\(reason)\"}]}".utf8)
                 return (data, HTTPURLResponse(
                     url: request.url!,
@@ -502,6 +501,23 @@ final class AppSettingsTests: XCTestCase {
         }
     }
 
+    func testOutOfRangeHotkeyValuesAreUnreadable() throws {
+        for (keyCode, modifiers) in [(-1, 2304), (35, -1), (Int(UInt32.max) + 1, 2304)] {
+            let defaults = makeDefaults()
+            let settings = AppSettings(
+                baseURL: "https://api.example.com/v1",
+                model: "test-model",
+                hotkeyKeyCode: keyCode,
+                hotkeyModifiers: modifiers
+            )
+            settings.save(to: defaults)
+
+            XCTAssertThrowsError(try AppSettings.load(from: defaults)) {
+                XCTAssertTrue($0 is AppSettings.LoadError)
+            }
+        }
+    }
+
     private func makeDefaults() -> UserDefaults {
         let suite = "RefineryTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
@@ -525,7 +541,8 @@ private final class Box<T> {
 }
 
 /// Test double that records the URLRequest and returns a canned response.
-private final class RequestRecorder: @unchecked Sendable {    private var _lastRequest: URLRequest?
+private final class RequestRecorder: @unchecked Sendable {
+    private var _lastRequest: URLRequest?
     private let semaphore = DispatchSemaphore(value: 1)
     private(set) var lastRequest: URLRequest? {
         get {

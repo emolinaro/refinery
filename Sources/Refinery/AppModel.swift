@@ -60,6 +60,10 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    func suspendHotkey() {
+        hotkeyCenter.suspend()
+    }
+
     /// Registers a newly recorded hotkey, keeping the previous registration
     /// and persisted settings when the new combination cannot be registered.
     @discardableResult

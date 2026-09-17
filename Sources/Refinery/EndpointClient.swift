@@ -1,5 +1,17 @@
 import Foundation
 
+private final class RedirectRejectingDelegate: NSObject, URLSessionTaskDelegate {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        completionHandler(nil)
+    }
+}
+
 /// Errors surfaced by `EndpointClient`.
 public enum EndpointError: LocalizedError, Equatable {
     /// The base URL is missing or malformed (e.g. not HTTP(S)).
@@ -73,12 +85,16 @@ public struct EndpointClient {
         var choices: [Choice]?
     }
 
-    enum Transport {
-        case send((URLRequest) async throws -> (Data, HTTPURLResponse))
-    }
+    typealias Transport = @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse)
 
-    var transport: Transport = .send { request in
-        let (data, response) = try await URLSession.shared.data(for: request)
+    var transport: Transport = { request in
+        let session = URLSession(
+            configuration: .ephemeral,
+            delegate: RedirectRejectingDelegate(),
+            delegateQueue: nil
+        )
+        defer { session.finishTasksAndInvalidate() }
+        let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw EndpointError.network("not an HTTP response")
         }
@@ -91,7 +107,7 @@ public struct EndpointClient {
         self.timeout = timeout
     }
 
-    init(baseURL: URL, model: String, timeout: TimeInterval = 60, transport: Transport) {
+    init(baseURL: URL, model: String, timeout: TimeInterval = 60, transport: @escaping Transport) {
         self.baseURL = baseURL
         self.model = model
         self.timeout = timeout
@@ -147,14 +163,12 @@ public struct EndpointClient {
             throw EndpointError.invalidRequest
         }
 
-        let (data, response): (Data, HTTPURLResponse)
-        switch transport {
-        case .send(let send):
-            do {
-                (data, response) = try await send(request)
-            } catch {
-                throw EndpointError.network(error.localizedDescription)
-            }
+        let data: Data
+        let response: HTTPURLResponse
+        do {
+            (data, response) = try await transport(request)
+        } catch {
+            throw EndpointError.network(error.localizedDescription)
         }
 
         guard (200...299).contains(response.statusCode) else {

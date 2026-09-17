@@ -54,6 +54,7 @@ struct SettingsView: View {
                     Text(recordedHotkeyLabel)
                     Button(recordingHotkey ? "Press keys…" : "Record") {
                         recordingHotkey = true
+                        model.suspendHotkey()
                         HotkeyRecorder.start { keyCode, modifiers, display in
                             recordingHotkey = false
                             if let keyCode, let modifiers {
@@ -63,6 +64,7 @@ struct SettingsView: View {
                                     hotkeyFeedback = "Could not set \(display); the previous hotkey is kept."
                                 }
                             } else {
+                                model.applyHotkey()
                                 hotkeyFeedback = display
                             }
                         }
