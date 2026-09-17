@@ -86,6 +86,20 @@ final class HotkeyCenterTests: XCTestCase {
         XCTAssertEqual(triggerCount, 1)
     }
 
+    func testRegistrationRequestsExclusiveOwnership() {
+        var receivedOptions: OptionBits?
+        let center = HotkeyCenter { _, _, _, options, _ in
+            receivedOptions = options
+            return OSStatus(eventHotKeyExistsErr)
+        }
+
+        XCTAssertFalse(center.register(
+            keyCode: UInt32(kVK_ANSI_J),
+            modifiers: UInt32(cmdKey | optionKey)
+        ))
+        XCTAssertEqual(receivedOptions, OptionBits(kEventHotKeyExclusive))
+    }
+
     private func drainMainQueue() async {
         await withCheckedContinuation { continuation in
             DispatchQueue.main.async {
@@ -198,6 +212,13 @@ final class EndpointClientTests: XCTestCase {
         let messages = body["messages"] as! [[String: Any]]
         XCTAssertEqual(messages.count, 2)
         XCTAssertEqual(messages[1]["content"] as? String, "hej med dig")
+    }
+
+    func testLiveTransportLimitsRequestAndResourceDuration() {
+        let configuration = EndpointClient.transportConfiguration(timeout: 5)
+
+        XCTAssertEqual(configuration.timeoutIntervalForRequest, 5)
+        XCTAssertEqual(configuration.timeoutIntervalForResource, 5)
     }
 
     func testWhitespaceOnlyAPIKeyFails() async {
@@ -426,11 +447,34 @@ final class KeychainStoreTests: XCTestCase {
         _ = try KeychainStore.readAPIKey(for: URL(string: "http://api.example/v1")!, copyMatching: copy)
 
         XCTAssertEqual(accounts, [
-            "https://api.example:443/v1",
-            "https://api.example:443/v1",
-            "https://api.example:8443/v1",
-            "https://api.example:443/v2",
-            "http://api.example:80/v1",
+            "https://api.example:443/v1/chat/completions",
+            "https://api.example:443/v1/chat/completions",
+            "https://api.example:8443/v1/chat/completions",
+            "https://api.example:443/v2/chat/completions",
+            "http://api.example:80/v1/chat/completions",
+        ])
+    }
+
+    func testAPIKeyAccountsDistinguishRepeatedTrailingSeparators() throws {
+        var accounts: [String] = []
+        let copy: KeychainStore.CopyMatching = { query, _ in
+            let values = query as NSDictionary
+            accounts.append(values[kSecAttrAccount as String] as! String)
+            return errSecItemNotFound
+        }
+
+        _ = try KeychainStore.readAPIKey(
+            for: URL(string: "https://api.example/v1")!,
+            copyMatching: copy
+        )
+        _ = try KeychainStore.readAPIKey(
+            for: URL(string: "https://api.example/v1//")!,
+            copyMatching: copy
+        )
+
+        XCTAssertEqual(accounts, [
+            "https://api.example:443/v1/chat/completions",
+            "https://api.example:443/v1//chat/completions",
         ])
     }
 
@@ -452,8 +496,8 @@ final class KeychainStoreTests: XCTestCase {
         )
 
         XCTAssertEqual(accounts, [
-            "https://api.example:443/v1?tenant=A",
-            "https://api.example:443/v1?tenant=B",
+            "https://api.example:443/v1/chat/completions?tenant=A",
+            "https://api.example:443/v1/chat/completions?tenant=B",
         ])
     }
 
@@ -475,8 +519,8 @@ final class KeychainStoreTests: XCTestCase {
         )
 
         XCTAssertEqual(accounts, [
-            "https://api.example:443/v1%2Ftenant",
-            "https://api.example:443/v1/tenant",
+            "https://api.example:443/v1%2Ftenant/chat/completions",
+            "https://api.example:443/v1/tenant/chat/completions",
         ])
     }
 }
@@ -509,6 +553,8 @@ final class RecordingSessionTests: XCTestCase {
 
     func testStartInvokesCompletionWhenTapCannotBeCreated() {
         let box = Box<(UInt32?, UInt32?, String)?>(nil)
+        var tapLocation: CGEventTapLocation?
+        var tapPlacement: CGEventTapPlacement?
         var tapOptions: CGEventTapOptions?
         var eventWasConsumed = false
         let session = RecordingSession(
@@ -516,7 +562,9 @@ final class RecordingSessionTests: XCTestCase {
                 box.value = (keyCode, modifiers, reason)
             },
             requestAccess: { true },
-            tapFactory: { options, _, callback, userInfo in
+            tapFactory: { location, placement, options, _, callback, userInfo in
+                tapLocation = location
+                tapPlacement = placement
                 tapOptions = options
                 let event = self.keyEvent(
                     keyCode: CGKeyCode(kVK_ANSI_Q),
@@ -536,6 +584,8 @@ final class RecordingSessionTests: XCTestCase {
         session.start()
 
         XCTAssertNil(box.value?.0)
+        XCTAssertEqual(tapLocation, .cgSessionEventTap)
+        XCTAssertEqual(tapPlacement, .headInsertEventTap)
         XCTAssertEqual(tapOptions, .defaultTap)
         XCTAssertTrue(eventWasConsumed)
         XCTAssertEqual(box.value?.2, "Could not capture keyboard events; check Accessibility permission.")
@@ -553,7 +603,7 @@ final class RecordingSessionTests: XCTestCase {
                 NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: nil)
                 return true
             },
-            tapFactory: { _, _, _, _ in
+            tapFactory: { _, _, _, _, _, _ in
                 tapCreationAttempted = true
                 return nil
             }
@@ -575,7 +625,7 @@ final class RecordingSessionTests: XCTestCase {
                 box.value = (keyCode, modifiers, reason)
             },
             requestAccess: { false },
-            tapFactory: { _, _, _, _ in
+            tapFactory: { _, _, _, _, _, _ in
                 tapCreationAttempted = true
                 return nil
             }
@@ -677,7 +727,7 @@ final class RecordingSessionTests: XCTestCase {
         let secondBox = Box<(UInt32?, UInt32?, String)?>(nil)
         HotkeyRecorder.start(
             requestAccess: { true },
-            tapFactory: { _, _, _, _ in nil },
+            tapFactory: { _, _, _, _, _, _ in nil },
             completion: { keyCode, modifiers, reason in
                 secondBox.value = (keyCode, modifiers, reason)
             }
@@ -871,16 +921,38 @@ final class ClipboardStoreTests: XCTestCase {
             Data([0x00, 0x7f, 0xff])
         )
     }
+
+    func testUnavailablePromisedDataLeavesOriginalClipboardUntouched() {
+        let provider = EmptyPasteboardDataProvider()
+        let item = NSPasteboardItem()
+        let promisedType = NSPasteboard.PasteboardType("com.refinery.promised")
+        XCTAssertTrue(item.setDataProvider(provider, forTypes: [promisedType]))
+        let pasteboard = FailingPasteboard(items: [item])
+
+        XCTAssertFalse(ClipboardStore.write("polished", to: pasteboard))
+        XCTAssertEqual(pasteboard.clearCount, 0)
+        XCTAssertTrue(pasteboard.pasteboardItems?.first === item)
+    }
+}
+
+private final class EmptyPasteboardDataProvider: NSObject, NSPasteboardItemDataProvider {
+    func pasteboard(
+        _ pasteboard: NSPasteboard?,
+        item: NSPasteboardItem,
+        provideDataForType type: NSPasteboard.PasteboardType
+    ) {}
 }
 
 private final class FailingPasteboard: PasteboardAccess {
     var pasteboardItems: [NSPasteboardItem]?
+    private(set) var clearCount = 0
 
     init(items: [NSPasteboardItem]) {
         pasteboardItems = items
     }
 
     func clearContents() -> Int {
+        clearCount += 1
         pasteboardItems = nil
         return 0
     }

@@ -20,15 +20,15 @@ public enum ClipboardStore {
     }
 
     static func write(_ text: String, to pasteboard: any PasteboardAccess) -> Bool {
-        let previousItems: [NSPasteboardItem] = pasteboard.pasteboardItems?.map { item in
+        var previousItems: [NSPasteboardItem] = []
+        for item in pasteboard.pasteboardItems ?? [] {
             let copy = NSPasteboardItem()
             for type in item.types {
-                if let data = item.data(forType: type) {
-                    copy.setData(data, forType: type)
-                }
+                guard let data = item.data(forType: type),
+                      copy.setData(data, forType: type) else { return false }
             }
-            return copy
-        } ?? []
+            previousItems.append(copy)
+        }
         pasteboard.clearContents()
         guard pasteboard.setString(text, forType: .string) else {
             pasteboard.clearContents()

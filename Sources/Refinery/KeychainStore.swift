@@ -81,8 +81,9 @@ enum KeychainStore {
     }
 
     private static func account(for baseURL: URL) -> String? {
-        guard let scheme = baseURL.scheme?.lowercased(),
-              let host = baseURL.host?.lowercased(), !host.isEmpty else { return nil }
+        let requestURL = EndpointClient.requestURL(for: baseURL)
+        guard let scheme = requestURL.scheme?.lowercased(),
+              let host = requestURL.host?.lowercased(), !host.isEmpty else { return nil }
         let defaultPort: Int
         switch scheme {
         case "http": defaultPort = 80
@@ -90,18 +91,12 @@ enum KeychainStore {
         default: return nil
         }
         let endpointHost = host.contains(":") ? "[\(host)]" : host
-        guard let components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
+        guard let components = URLComponents(url: requestURL, resolvingAgainstBaseURL: false) else {
             return nil
         }
-        var path = components.percentEncodedPath
-        while path.count > 1, path.hasSuffix("/") {
-            path.removeLast()
-        }
-        if path.isEmpty {
-            path = "/"
-        }
+        let path = components.percentEncodedPath.isEmpty ? "/" : components.percentEncodedPath
         let query = components.percentEncodedQuery
             .map { "?\($0)" } ?? ""
-        return "\(scheme)://\(endpointHost):\(baseURL.port ?? defaultPort)\(path)\(query)"
+        return "\(scheme)://\(endpointHost):\(requestURL.port ?? defaultPort)\(path)\(query)"
     }
 }

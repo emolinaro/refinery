@@ -93,8 +93,9 @@ public struct EndpointClient {
     typealias Transport = @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse)
 
     var transport: Transport = { request in
+        let configuration = EndpointClient.transportConfiguration(timeout: request.timeoutInterval)
         let session = URLSession(
-            configuration: .ephemeral,
+            configuration: configuration,
             delegate: RedirectRejectingDelegate(),
             delegateQueue: nil
         )
@@ -114,6 +115,17 @@ public struct EndpointClient {
             try accumulator.append(byte)
         }
         return (accumulator.data, http)
+    }
+
+    static func transportConfiguration(timeout: TimeInterval) -> URLSessionConfiguration {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = timeout
+        configuration.timeoutIntervalForResource = timeout
+        return configuration
+    }
+
+    static func requestURL(for baseURL: URL) -> URL {
+        baseURL.appendingPathComponent("chat/completions")
     }
 
     public init(baseURL: URL, model: String, timeout: TimeInterval = 60) {
@@ -156,7 +168,7 @@ public struct EndpointClient {
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedKey.isEmpty else { throw EndpointError.missingAPIKey }
 
-        let url = baseURL.appendingPathComponent("chat/completions")
+        let url = Self.requestURL(for: baseURL)
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = timeout

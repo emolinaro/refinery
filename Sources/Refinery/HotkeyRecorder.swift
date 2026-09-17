@@ -180,6 +180,8 @@ enum HotkeyRecorder {
 @MainActor
 final class RecordingSession {
     typealias TapFactory = (
+        CGEventTapLocation,
+        CGEventTapPlacement,
         CGEventTapOptions,
         CGEventMask,
         CGEventTapCallBack,
@@ -237,6 +239,8 @@ final class RecordingSession {
             return nil
         }
         guard let tap = tapFactory(
+            .cgSessionEventTap,
+            .headInsertEventTap,
             .defaultTap,
             mask,
             callback,
@@ -364,14 +368,16 @@ final class RecordingSession {
     }
 
     private static func makeTap(
+        location: CGEventTapLocation,
+        placement: CGEventTapPlacement,
         options: CGEventTapOptions,
         mask: CGEventMask,
         callback: @escaping CGEventTapCallBack,
         userInfo: UnsafeMutableRawPointer
     ) -> CFMachPort? {
         CGEvent.tapCreate(
-            tap: .cghidEventTap,
-            place: .headInsertEventTap,
+            tap: location,
+            place: placement,
             options: options,
             eventsOfInterest: mask,
             callback: callback,

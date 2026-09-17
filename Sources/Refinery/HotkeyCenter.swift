@@ -15,6 +15,14 @@ protocol HotkeyManaging: AnyObject {
 /// global hotkey on macOS without a helper process or sandbox entitlements.
 @MainActor
 final class HotkeyCenter: HotkeyManaging {
+    typealias HotkeyRegistrar = (
+        UInt32,
+        UInt32,
+        EventHotKeyID,
+        OptionBits,
+        inout EventHotKeyRef?
+    ) -> OSStatus
+
     /// Called on the main thread whenever the registered hotkey fires.
     var onTrigger: (() -> Void)?
 
@@ -23,8 +31,20 @@ final class HotkeyCenter: HotkeyManaging {
     private var currentKeyCode: UInt32 = 0
     private var currentModifiers: UInt32 = 0
     private var isTriggerSuppressed = false
+    private let registerHotkey: HotkeyRegistrar
 
-    init() {}
+    init(registerHotkey: @escaping HotkeyRegistrar = { keyCode, modifiers, hotkeyID, options, ref in
+        RegisterEventHotKey(
+            keyCode,
+            modifiers,
+            hotkeyID,
+            GetApplicationEventTarget(),
+            options,
+            &ref
+        )
+    }) {
+        self.registerHotkey = registerHotkey
+    }
 
     /// Registers the hotkey, replacing any previously registered one. The
     /// previous registration is kept when the new combination cannot be
@@ -41,7 +61,13 @@ final class HotkeyCenter: HotkeyManaging {
 
         let hotkeyID = EventHotKeyID(signature: Self.signatureValue, id: 1)
         var ref: EventHotKeyRef?
-        let status = RegisterEventHotKey(keyCode, modifiers, hotkeyID, GetApplicationEventTarget(), 0, &ref)
+        let status = registerHotkey(
+            keyCode,
+            modifiers,
+            hotkeyID,
+            OptionBits(kEventHotKeyExclusive),
+            &ref
+        )
         guard status == noErr, let newRef = ref else {
             return false
         }
