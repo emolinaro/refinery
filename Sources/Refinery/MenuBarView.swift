@@ -13,6 +13,8 @@ public struct MenuBarView: View {
             Text("Polished - result is on the clipboard")
         case .emptySelection:
             Text("No text selected")
+        case .hotkeyRegistrationFailure:
+            Text("Could not register hotkey; it may be in use by another app.")
         case .failure(let message):
             Text(message)
         }

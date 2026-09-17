@@ -259,7 +259,7 @@ final class EndpointClientTests: XCTestCase {
 
     func testPolishPreservesCompletionWhitespace() async throws {
         let response: EndpointClient.Transport = { request in
-            let data = Data(#"{"choices":[{"message":{"content":"  indented\n"}}]}"#.utf8)
+            let data = Data(#"{"choices":[{"message":{"content":"  indented\n"},"finish_reason":"stop"}]}"#.utf8)
             return (data, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
         }
         let client = EndpointClient(
@@ -368,6 +368,38 @@ final class EndpointClientTests: XCTestCase {
                 XCTAssertEqual(error, .incompleteCompletion)
                 XCTAssertEqual(error.localizedDescription, "The endpoint returned an incomplete result.")
                 XCTAssertFalse(error.localizedDescription.contains(reason))
+            } catch {
+                XCTFail("unexpected error type \(error)")
+            }
+        }
+    }
+
+    func testMissingOrNullFinishReasonSurfacesIncompleteError() async {
+        let payloads = [
+            #"{"choices":[{"message":{"content":"Partial"}}]}"#,
+            #"{"choices":[{"message":{"content":"Partial"},"finish_reason":null}]}"#,
+        ]
+
+        for payload in payloads {
+            let response: EndpointClient.Transport = { request in
+                (Data(payload.utf8), HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!)
+            }
+            let client = EndpointClient(
+                baseURL: URL(string: "https://api.example.com/v1")!,
+                model: "test-model",
+                transport: response
+            )
+
+            do {
+                _ = try await client.polish("text", preset: .polish, apiKey: "dummy")
+                XCTFail("expected incompleteCompletion")
+            } catch let error as EndpointError {
+                XCTAssertEqual(error, .incompleteCompletion)
             } catch {
                 XCTFail("unexpected error type \(error)")
             }
@@ -639,6 +671,68 @@ final class RecordingSessionTests: XCTestCase {
         XCTAssertNil(HotkeyRecorder.currentSession)
     }
 
+    func testTapDisabledByTimeoutIsReenabled() throws {
+        let port = try XCTUnwrap(CFMachPortCreate(kCFAllocatorDefault, nil, nil, nil))
+        var callback: CGEventTapCallBack?
+        var userInfo: UnsafeMutableRawPointer?
+        var enableCount = 0
+        let session = RecordingSession(
+            completion: { _, _, _ in },
+            requestAccess: { true },
+            tapFactory: { _, _, _, _, capturedCallback, capturedUserInfo in
+                callback = capturedCallback
+                userInfo = capturedUserInfo
+                return port
+            },
+            tapEnabler: { _ in enableCount += 1 }
+        )
+        HotkeyRecorder.currentSession = session
+        session.start()
+
+        _ = try XCTUnwrap(callback)(
+            CGEventTapProxy(bitPattern: 1)!,
+            .tapDisabledByTimeout,
+            keyEvent(keyCode: CGKeyCode(kVK_ANSI_P)),
+            try XCTUnwrap(userInfo)
+        )
+
+        XCTAssertEqual(enableCount, 2)
+        XCTAssertTrue(HotkeyRecorder.currentSession === session)
+        session.invalidate()
+    }
+
+    func testTapDisabledByUserInputEndsRecordingWithFeedback() throws {
+        let port = try XCTUnwrap(CFMachPortCreate(kCFAllocatorDefault, nil, nil, nil))
+        let box = Box<(UInt32?, UInt32?, String)?>(nil)
+        var callback: CGEventTapCallBack?
+        var userInfo: UnsafeMutableRawPointer?
+        let session = RecordingSession(
+            completion: { keyCode, modifiers, reason in
+                box.value = (keyCode, modifiers, reason)
+            },
+            requestAccess: { true },
+            tapFactory: { _, _, _, _, capturedCallback, capturedUserInfo in
+                callback = capturedCallback
+                userInfo = capturedUserInfo
+                return port
+            },
+            tapEnabler: { _ in }
+        )
+        HotkeyRecorder.currentSession = session
+        session.start()
+
+        _ = try XCTUnwrap(callback)(
+            CGEventTapProxy(bitPattern: 1)!,
+            .tapDisabledByUserInput,
+            keyEvent(keyCode: CGKeyCode(kVK_ANSI_P)),
+            try XCTUnwrap(userInfo)
+        )
+
+        XCTAssertNil(box.value?.0)
+        XCTAssertEqual(box.value?.2, "Keyboard capture was disabled; try recording the hotkey again.")
+        XCTAssertNil(HotkeyRecorder.currentSession)
+    }
+
     func testHandleCapturesCommandOptionCombo() {
         let (session, box) = makeSession()
         session.handle(keyEvent(keyCode: CGKeyCode(kVK_ANSI_J), flags: [.maskCommand, .maskAlternate]))
@@ -787,6 +881,32 @@ final class AppModelHotkeyTests: XCTestCase {
         XCTAssertFalse(hotkeys.isTriggerSuppressed)
     }
 
+    func testSuccessfulAdoptionClearsPriorRegistrationFailure() {
+        let hotkeys = StubHotkeyManager(registrationResults: [false, true])
+        let model = AppModel(
+            settings: AppSettings(baseURL: "https://api.example.com/v1", model: "test-model"),
+            hotkeyCenter: hotkeys
+        )
+        XCTAssertNotNil(model.lastOutcome)
+
+        XCTAssertTrue(model.adoptHotkey(keyCode: kVK_ANSI_J, modifiers: cmdKey | optionKey))
+
+        XCTAssertNil(model.lastOutcome)
+    }
+
+    func testSuccessfulAdoptionPreservesUnrelatedFailure() {
+        let hotkeys = StubHotkeyManager(registrationResults: [true, true])
+        let model = AppModel(
+            settings: AppSettings(baseURL: "https://api.example.com/v1", model: "test-model"),
+            hotkeyCenter: hotkeys
+        )
+        model.lastOutcome = .failure("Endpoint failure")
+
+        XCTAssertTrue(model.adoptHotkey(keyCode: kVK_ANSI_J, modifiers: cmdKey | optionKey))
+
+        XCTAssertEqual(model.lastOutcome, .failure("Endpoint failure"))
+    }
+
     func testUnreadableSettingsAreNotPersistedByUnrelatedUpdates() {
         var persisted: [AppSettings] = []
         let hotkeys = StubHotkeyManager(registrationResults: [true, true])
@@ -933,6 +1053,29 @@ final class ClipboardStoreTests: XCTestCase {
         XCTAssertEqual(pasteboard.clearCount, 0)
         XCTAssertTrue(pasteboard.pasteboardItems?.first === item)
     }
+
+    func testUnavailableClipboardSnapshotIsNotCleared() {
+        let pasteboard = FailingPasteboard(items: nil)
+
+        let result = ClipboardStore.writeResult("polished", to: pasteboard)
+
+        XCTAssertEqual(result.failure, .snapshotFailed)
+        XCTAssertEqual(pasteboard.clearCount, 0)
+    }
+
+    func testFailedRestorationReportsClipboardLoss() {
+        let item = NSPasteboardItem()
+        item.setString("original", forType: .string)
+        let pasteboard = FailingPasteboard(items: [item], writeObjectsSucceeds: false)
+
+        let result = ClipboardStore.writeResult("polished", to: pasteboard)
+
+        XCTAssertEqual(result.failure, .restorationFailed)
+        XCTAssertEqual(
+            result.failure?.localizedDescription,
+            "Could not write the polished text or restore the previous clipboard contents."
+        )
+    }
 }
 
 private final class EmptyPasteboardDataProvider: NSObject, NSPasteboardItemDataProvider {
@@ -946,9 +1089,11 @@ private final class EmptyPasteboardDataProvider: NSObject, NSPasteboardItemDataP
 private final class FailingPasteboard: PasteboardAccess {
     var pasteboardItems: [NSPasteboardItem]?
     private(set) var clearCount = 0
+    private let writeObjectsSucceeds: Bool
 
-    init(items: [NSPasteboardItem]) {
+    init(items: [NSPasteboardItem]?, writeObjectsSucceeds: Bool = true) {
         pasteboardItems = items
+        self.writeObjectsSucceeds = writeObjectsSucceeds
     }
 
     func clearContents() -> Int {
@@ -962,6 +1107,7 @@ private final class FailingPasteboard: PasteboardAccess {
     }
 
     func writeObjects(_ objects: [any NSPasteboardWriting]) -> Bool {
+        guard writeObjectsSucceeds else { return false }
         pasteboardItems = objects.compactMap { $0 as? NSPasteboardItem }
         return true
     }
@@ -971,6 +1117,13 @@ private final class FailingPasteboard: PasteboardAccess {
 private final class Box<T> {
     var value: T
     init(_ value: T) { self.value = value }
+}
+
+private extension Result {
+    var failure: Failure? {
+        guard case .failure(let error) = self else { return nil }
+        return error
+    }
 }
 
 /// Test double that records the URLRequest and returns a canned response.
@@ -993,7 +1146,7 @@ private final class RequestRecorder: @unchecked Sendable {
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         lastRequest = request
         let json = """
-        {"choices":[{"message":{"role":"assistant","content":"Polished output"}}]}
+        {"choices":[{"message":{"role":"assistant","content":"Polished output"},"finish_reason":"stop"}]}
         """
         return (
             Data(json.utf8),

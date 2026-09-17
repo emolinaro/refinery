@@ -15,6 +15,7 @@ public final class AppModel: ObservableObject {
     enum Outcome: Equatable {
         case polished
         case emptySelection
+        case hotkeyRegistrationFailure
         case failure(String)
     }
 
@@ -94,7 +95,7 @@ public final class AppModel: ObservableObject {
             modifiers: UInt32(settings.hotkeyModifiers)
         )
         if !ok {
-            lastOutcome = .failure("Could not register hotkey; it may be in use by another app.")
+            lastOutcome = .hotkeyRegistrationFailure
         }
     }
 
@@ -116,8 +117,11 @@ public final class AppModel: ObservableObject {
                 $0.hotkeyKeyCode = keyCode
                 $0.hotkeyModifiers = modifiers
             }
+            if lastOutcome == .hotkeyRegistrationFailure {
+                lastOutcome = nil
+            }
         } else {
-            lastOutcome = .failure("Could not register hotkey; it may be in use by another app.")
+            lastOutcome = .hotkeyRegistrationFailure
         }
         return ok
     }
@@ -183,8 +187,11 @@ public final class AppModel: ObservableObject {
                     custom: custom,
                     key: apiKey
                 )
-                guard ClipboardStore.write(result) else {
-                    throw ClipboardError.writeFailed
+                switch ClipboardStore.writeResult(result, to: NSPasteboard.general) {
+                case .success:
+                    break
+                case .failure(let error):
+                    throw error
                 }
                 lastOutcome = .polished
                 isRunning = false

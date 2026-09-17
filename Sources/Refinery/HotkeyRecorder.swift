@@ -187,10 +187,12 @@ final class RecordingSession {
         CGEventTapCallBack,
         UnsafeMutableRawPointer
     ) -> CFMachPort?
+    typealias TapEnabler = (CFMachPort) -> Void
 
     private let completion: (UInt32?, UInt32?, String) -> Void
     private let requestAccess: () -> Bool
     private let tapFactory: TapFactory
+    private let tapEnabler: TapEnabler
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var observers: [NSObjectProtocol] = []
@@ -209,11 +211,15 @@ final class RecordingSession {
     init(
         completion: @escaping (UInt32?, UInt32?, String) -> Void,
         requestAccess: @escaping () -> Bool,
-        tapFactory: @escaping TapFactory
+        tapFactory: @escaping TapFactory,
+        tapEnabler: @escaping TapEnabler = { tap in
+            CGEvent.tapEnable(tap: tap, enable: true)
+        }
     ) {
         self.completion = completion
         self.requestAccess = requestAccess
         self.tapFactory = tapFactory
+        self.tapEnabler = tapEnabler
         installEndObservers()
     }
 
@@ -230,11 +236,11 @@ final class RecordingSession {
 
         let mask = CGEventMask(1 << CGEventType.keyDown.rawValue)
             | CGEventMask(1 << CGEventType.keyUp.rawValue)
-        let callback: CGEventTapCallBack = { _, _, event, userInfo in
+        let callback: CGEventTapCallBack = { _, type, event, userInfo in
             guard let userInfo else { return Unmanaged.passUnretained(event) }
             let session = Unmanaged<RecordingSession>.fromOpaque(userInfo).takeUnretainedValue()
             MainActor.assumeIsolated {
-                session.handle(event)
+                session.handleTapEvent(type, event: event)
             }
             return nil
         }
@@ -265,7 +271,7 @@ final class RecordingSession {
         self.tap = tap
         self.runLoopSource = source
         CFRunLoopAddSource(RunLoop.main.getCFRunLoop(), source, .commonModes)
-        CGEvent.tapEnable(tap: tap, enable: true)
+        tapEnabler(tap)
     }
 
     /// Observes the events that end the session early: the settings menu
@@ -295,6 +301,24 @@ final class RecordingSession {
     func invalidate() {
         finished = true
         teardown()
+    }
+
+    private func handleTapEvent(_ type: CGEventType, event: CGEvent) {
+        guard !finished else { return }
+        switch type {
+        case .tapDisabledByTimeout:
+            if let tap {
+                tapEnabler(tap)
+            }
+        case .tapDisabledByUserInput:
+            finish(
+                keyCode: nil,
+                modifiers: nil,
+                reason: "Keyboard capture was disabled; try recording the hotkey again."
+            )
+        default:
+            handle(event)
+        }
     }
 
     func handle(_ event: CGEvent) {

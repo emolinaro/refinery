@@ -214,7 +214,7 @@ public struct EndpointClient {
         guard let choice = decoded.choices?.first else {
             throw EndpointError.emptyCompletion
         }
-        if let reason = choice.finishReason, reason != "stop" {
+        guard choice.finishReason == "stop" else {
             throw EndpointError.incompleteCompletion
         }
         guard let content = choice.message?.content,
