@@ -2,7 +2,7 @@ import Foundation
 
 /// The built-in polish style presets. Exactly six preset modes exist; the sixth
 /// (`customOneOff`) carries a user-typed prompt for this run only.
-enum Preset: String, CaseIterable, Identifiable, Codable {
+public enum Preset: String, CaseIterable, Identifiable, Codable, Sendable {
     /// General-purpose polish: fix grammar and clarity, keep meaning and language.
     case polish
     /// Tighten the text: fewer words, same message.
@@ -16,7 +16,7 @@ enum Preset: String, CaseIterable, Identifiable, Codable {
     /// A user-typed prompt applied to this run only.
     case customOneOff
 
-    var id: String { rawValue }
+    public var id: String { rawValue }
 
     /// Short label shown in the menu-bar UI and notifications.
     var label: String {
@@ -35,6 +35,14 @@ enum Preset: String, CaseIterable, Identifiable, Codable {
 ///
 /// `customPrompt` is only meaningful for `.customOneOff`, where it carries the
 /// user's typed instruction. For all other presets it is ignored.
+enum PresetPromptError: LocalizedError, Equatable {
+    case missingCustomPrompt
+
+    var errorDescription: String? {
+        "Enter a custom instruction before polishing."
+    }
+}
+
 enum PresetPromptBuilder {
     /// The system prompt that applies to every non-custom preset.
     private static let baseSystemPrompt = """
@@ -49,7 +57,7 @@ enum PresetPromptBuilder {
     ///   - preset: the chosen preset.
     ///   - customPrompt: the typed instruction, used only by `.customOneOff`.
     /// - Returns: the system prompt string.
-    static func systemPrompt(for preset: Preset, customPrompt: String? = nil) -> String {
+    static func systemPrompt(for preset: Preset, customPrompt: String? = nil) throws -> String {
         switch preset {
         case .polish:
             return baseSystemPrompt
@@ -76,13 +84,13 @@ enum PresetPromptBuilder {
                 + " keeping the meaning and tone. Never translate."
         case .customOneOff:
             let trimmed = (customPrompt ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            let instruction = trimmed.isEmpty ? "Polish the text." : trimmed
+            guard !trimmed.isEmpty else { throw PresetPromptError.missingCustomPrompt }
             return """
             You are a text-polishing assistant. Follow the user's instruction about \
             how to transform the text. Return ONLY the transformed text. No preamble, \
             no explanation, no markdown fences, no quotes around the result.
 
-            Instruction: \(instruction)
+            Instruction: \(trimmed)
             """
         }
     }
@@ -97,9 +105,9 @@ enum PresetPromptBuilder {
         for selectedText: String,
         preset: Preset,
         customPrompt: String? = nil
-    ) -> [[String: String]] {
+    ) throws -> [[String: String]] {
         [
-            ["role": "system", "content": systemPrompt(for: preset, customPrompt: customPrompt)],
+            ["role": "system", "content": try systemPrompt(for: preset, customPrompt: customPrompt)],
             ["role": "user", "content": selectedText],
         ]
     }

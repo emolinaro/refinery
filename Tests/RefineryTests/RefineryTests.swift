@@ -12,23 +12,23 @@ final class PresetPromptBuilderTests: XCTestCase {
         )
     }
 
-    func testMessagesShape() {
-        let messages = PresetPromptBuilder.messages(for: "hello", preset: .polish)
+    func testMessagesShape() throws {
+        let messages = try PresetPromptBuilder.messages(for: "hello", preset: .polish)
         XCTAssertEqual(messages.count, 2)
         XCTAssertEqual(messages[0]["role"], "system")
         XCTAssertEqual(messages[1]["role"], "user")
         XCTAssertEqual(messages[1]["content"], "hello")
     }
 
-    func testCustomPromptOnlyUsedByCustomPreset() {
-        let messages = PresetPromptBuilder.messages(
+    func testCustomPromptOnlyUsedByCustomPreset() throws {
+        let messages = try PresetPromptBuilder.messages(
             for: "some text",
             preset: .polish,
             customPrompt: "IGNORE"
         )
         XCTAssertFalse(messages[0]["content"]?.contains("IGNORE") ?? true)
 
-        let customMessages = PresetPromptBuilder.messages(
+        let customMessages = try PresetPromptBuilder.messages(
             for: "some text",
             preset: .customOneOff,
             customPrompt: "Make it a haiku"
@@ -36,14 +36,15 @@ final class PresetPromptBuilderTests: XCTestCase {
         XCTAssertTrue(customMessages[0]["content"]?.contains("Make it a haiku") ?? false)
     }
 
-    func testEmptyCustomPromptFallsBackToPolish() {
-        let prompt = PresetPromptBuilder.systemPrompt(for: .customOneOff, customPrompt: "   ")
-        XCTAssertTrue(prompt.contains("Polish the text."))
+    func testEmptyCustomPromptFails() {
+        XCTAssertThrowsError(try PresetPromptBuilder.systemPrompt(for: .customOneOff, customPrompt: "   ")) {
+            XCTAssertEqual($0 as? PresetPromptError, .missingCustomPrompt)
+        }
     }
 
-    func testSystemPromptsMentionReturnOnlyText() {
+    func testSystemPromptsMentionReturnOnlyText() throws {
         for preset in Preset.allCases {
-            let prompt = PresetPromptBuilder.systemPrompt(for: preset, customPrompt: "x")
+            let prompt = try PresetPromptBuilder.systemPrompt(for: preset, customPrompt: "x")
             XCTAssertTrue(
                 prompt.contains("ONLY"),
                 "preset \(preset) should instruct the model to return only text"
@@ -51,8 +52,8 @@ final class PresetPromptBuilderTests: XCTestCase {
         }
     }
 
-    func testLanguageAwarePromptNeverTranslates() {
-        let prompt = PresetPromptBuilder.systemPrompt(for: .languageAware)
+    func testLanguageAwarePromptNeverTranslates() throws {
+        let prompt = try PresetPromptBuilder.systemPrompt(for: .languageAware)
         XCTAssertTrue(prompt.contains("Danish"))
         XCTAssertTrue(prompt.contains("English"))
         XCTAssertTrue(prompt.contains("Never translate"))
@@ -176,6 +177,62 @@ final class EndpointClientTests: XCTestCase {
         }
     }
 
+    func testRemoteHTTPBaseURLIsRejectedBeforeSending() async {
+        let recorder = RequestRecorder()
+        let client = EndpointClient(
+            baseURL: URL(string: "http://api.example.com/v1")!,
+            model: "test-model",
+            transport: .send(recorder.send)
+        )
+        do {
+            _ = try await client.polish("text", preset: .polish, apiKey: "dummy")
+            XCTFail("expected invalidBaseURL")
+        } catch let error as EndpointError {
+            XCTAssertEqual(error, .invalidBaseURL)
+        } catch {
+            XCTFail("unexpected error type \(error)")
+        }
+        XCTAssertNil(recorder.lastRequest)
+    }
+
+    func testLoopbackHTTPBaseURLsAreAllowed() {
+        for base in ["http://localhost:8080/v1", "http://127.0.0.1/v1", "http://[::1]/v1"] {
+            XCTAssertTrue(EndpointClient.isAllowedBaseURL(URL(string: base)!))
+        }
+    }
+
+    func testPolishPreservesCompletionWhitespace() async throws {
+        let response = EndpointClient.Transport.send { request in
+            let data = Data(#"{"choices":[{"message":{"content":"  indented\n"}}]}"#.utf8)
+            return (data, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        }
+        let client = EndpointClient(
+            baseURL: URL(string: "https://api.example.com/v1")!,
+            model: "test-model",
+            transport: response
+        )
+        let result = try await client.polish("text", preset: .polish, apiKey: "dummy")
+        XCTAssertEqual(result, "  indented\n")
+    }
+
+    func testEmptyCustomPromptFailsBeforeSending() async {
+        let recorder = RequestRecorder()
+        let client = EndpointClient(
+            baseURL: URL(string: "https://api.example.com/v1")!,
+            model: "test-model",
+            transport: .send(recorder.send)
+        )
+        do {
+            _ = try await client.polish("text", preset: .customOneOff, customPrompt: " ", apiKey: "dummy")
+            XCTFail("expected missingCustomPrompt")
+        } catch let error as PresetPromptError {
+            XCTAssertEqual(error, .missingCustomPrompt)
+        } catch {
+            XCTFail("unexpected error type \(error)")
+        }
+        XCTAssertNil(recorder.lastRequest)
+    }
+
     func testHTTPErrorSurfacesStatus() async {
         let failing = EndpointClient.Transport.send { _ in
             (Data("nope".utf8), HTTPURLResponse(
@@ -257,7 +314,7 @@ final class RecordingSessionTests: XCTestCase {
     }
 
     func testStartInvokesCompletionWhenTapCannotBeCreated() {
-        // The tap callback path needs Accessibility; start() handles the
+        // The tap callback path needs Input Monitoring; start() handles the
         // failure branch deterministically by completing with nil.
         let box = Box<(UInt32?, UInt32?, String)?>(nil)
         HotkeyRecorder.start { keyCode, modifiers, reason in
@@ -267,7 +324,12 @@ final class RecordingSessionTests: XCTestCase {
             // Tap creation failed in this environment: start() must have
             // completed synchronously with the permission failure.
             XCTAssertNil(box.value?.0)
-            XCTAssertEqual(box.value?.2, "Could not listen for keyboard events; check the Accessibility permission.")
+            XCTAssertTrue(
+                [
+                    "Input Monitoring permission is required to record a hotkey.",
+                    "Could not listen for keyboard events; check Input Monitoring permission.",
+                ].contains(box.value?.2 ?? "")
+            )
         } else {
             // Tap creation succeeded in this environment; the session stays
             // current until a combination is captured.
@@ -324,7 +386,7 @@ final class RecordingSessionTests: XCTestCase {
     }
 
     func testMenuCloseEndsSessionAndClearsCurrentSession() {
-        let (session, box) = makeSession()
+        let (_, box) = makeSession()
         NotificationCenter.default.post(name: NSMenu.didEndTrackingNotification, object: nil)
         XCTAssertEqual(box.value?.2, "Cancelled.")
         XCTAssertNil(HotkeyRecorder.currentSession)
@@ -365,6 +427,38 @@ final class RecordingSessionTests: XCTestCase {
             XCTAssertNotNil(secondBox.value)
             XCTAssertNil(secondBox.value?.0)
         }
+    }
+}
+
+final class AppSettingsTests: XCTestCase {
+    func testMissingSettingsUseFirstRunDefaults() throws {
+        let defaults = makeDefaults()
+        let settings = try AppSettings.load(from: defaults)
+        XCTAssertEqual(settings.baseURL, "https://api.ucloud-ai.com/v1")
+        XCTAssertEqual(settings.model, "ucloud-ai")
+    }
+
+    func testUnreadableSettingsDoNotFallBackToProviderDefaults() {
+        let defaults = makeDefaults()
+        defaults.set(Data("not-json".utf8), forKey: AppSettings.defaultsKey)
+        XCTAssertThrowsError(try AppSettings.load(from: defaults)) {
+            XCTAssertTrue($0 is AppSettings.LoadError)
+        }
+    }
+
+    private func makeDefaults() -> UserDefaults {
+        let suite = "RefineryTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        return defaults
+    }
+}
+
+final class ClipboardStoreTests: XCTestCase {
+    func testWriteReportsSuccessAndPreservesText() {
+        let pasteboard = NSPasteboard(name: .init("RefineryTests.\(UUID().uuidString)"))
+        XCTAssertTrue(ClipboardStore.write("  polished\n", to: pasteboard))
+        XCTAssertEqual(pasteboard.string(forType: .string), "  polished\n")
     }
 }
 

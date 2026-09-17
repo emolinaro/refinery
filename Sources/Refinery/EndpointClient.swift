@@ -1,7 +1,7 @@
 import Foundation
 
 /// Errors surfaced by `EndpointClient`.
-enum EndpointError: LocalizedError, Equatable {
+public enum EndpointError: LocalizedError, Equatable {
     /// The base URL is missing or malformed (e.g. not HTTP(S)).
     case invalidBaseURL
     /// The API key is missing from the Keychain.
@@ -17,10 +17,10 @@ enum EndpointError: LocalizedError, Equatable {
     /// The response carried no choices or an empty message.
     case emptyCompletion
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .invalidBaseURL:
-            return "The endpoint base URL is missing or not a valid http(s) URL."
+            return "The endpoint must use HTTPS, except for localhost development endpoints."
         case .missingAPIKey:
             return "No API key is saved. Add one in Refinery settings."
         case .invalidRequest:
@@ -43,10 +43,10 @@ enum EndpointError: LocalizedError, Equatable {
 /// Speaks POST {baseURL}/chat/completions with `Authorization: Bearer <key>`.
 /// The API key is passed in per request and is never logged, stored on disk or
 /// included in error descriptions.
-struct EndpointClient {
-    var baseURL: URL
-    var model: String
-    var timeout: TimeInterval = 60
+public struct EndpointClient {
+    public var baseURL: URL
+    public var model: String
+    public var timeout: TimeInterval = 60
 
     private struct RequestBody: Codable {
         var model: String
@@ -77,6 +77,28 @@ struct EndpointClient {
         return (data, http)
     }
 
+    public init(baseURL: URL, model: String, timeout: TimeInterval = 60) {
+        self.baseURL = baseURL
+        self.model = model
+        self.timeout = timeout
+    }
+
+    init(baseURL: URL, model: String, timeout: TimeInterval = 60, transport: Transport) {
+        self.baseURL = baseURL
+        self.model = model
+        self.timeout = timeout
+        self.transport = transport
+    }
+
+    static func isAllowedBaseURL(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased(),
+              let host = url.host?.lowercased(), !host.isEmpty else {
+            return false
+        }
+        if scheme == "https" { return true }
+        return scheme == "http" && ["localhost", "127.0.0.1", "::1"].contains(host)
+    }
+
     /// Runs a polish request against the configured endpoint.
     /// - Parameters:
     ///   - selectedText: the text captured from the user's selection.
@@ -84,12 +106,14 @@ struct EndpointClient {
     ///   - customPrompt: the typed instruction, used only by `.customOneOff`.
     ///   - apiKey: the bearer token. Never logged, never persisted here.
     /// - Returns: the polished text from the first choice.
-    func polish(
+    public func polish(
         _ selectedText: String,
         preset: Preset,
         customPrompt: String? = nil,
         apiKey: String
     ) async throws -> String {
+        guard Self.isAllowedBaseURL(baseURL) else { throw EndpointError.invalidBaseURL }
+
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedKey.isEmpty else { throw EndpointError.missingAPIKey }
 
@@ -103,7 +127,7 @@ struct EndpointClient {
 
         let body = RequestBody(
             model: model,
-            messages: PresetPromptBuilder.messages(
+            messages: try PresetPromptBuilder.messages(
                 for: selectedText,
                 preset: preset,
                 customPrompt: customPrompt
@@ -141,6 +165,6 @@ struct EndpointClient {
               !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw EndpointError.emptyCompletion
         }
-        return content.trimmingCharacters(in: .whitespacesAndNewlines)
+        return content
     }
 }

@@ -8,7 +8,6 @@ struct SettingsView: View {
     @State private var draftBaseURL = ""
     @State private var draftModel = ""
     @State private var draftAPIKey = ""
-    @State private var keySaved = false
     @State private var recordingHotkey = false
     @State private var hotkeyFeedback: String?
 
@@ -37,10 +36,10 @@ struct SettingsView: View {
                 SecureField("sk-…", text: $draftAPIKey)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 200)
-                Button(keySaved ? "Saved" : "Save Key") {
+                Button(model.apiKeyPresent ? "Saved" : "Save Key") {
                     saveKey()
                 }
-                .disabled(draftAPIKey.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(draftAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             } label: {
                 Text("API Key")
             }
@@ -91,7 +90,10 @@ struct SettingsView: View {
                         $0.model = draftModel.trimmingCharacters(in: .whitespacesAndNewlines)
                     }
                 }
-                .disabled(draftBaseURL.isEmpty || draftModel.isEmpty)
+                .disabled(
+                    draftBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || draftModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                )
             }
         }
         .padding(4)
@@ -99,7 +101,6 @@ struct SettingsView: View {
         .onAppear {
             draftBaseURL = model.settings.baseURL
             draftModel = model.settings.model
-            keySaved = model.apiKeyPresent
         }
     }
 
@@ -116,7 +117,6 @@ struct SettingsView: View {
         do {
             try KeychainStore.saveAPIKey(trimmed)
             model.apiKeyPresent = true
-            keySaved = true
             draftAPIKey = ""
         } catch {
             hotkeyFeedback = error.localizedDescription

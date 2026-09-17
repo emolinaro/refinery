@@ -21,7 +21,7 @@ enum CustomPromptPanel {
         panel.level = .floating
         panel.center()
 
-        let host = PanelHost(panel: panel)
+        let host = PanelHost()
         panel.contentView = NSHostingView(rootView: CustomPromptView(host: host))
         NSApp.activate(ignoringOtherApps: true)
         panel.orderFrontRegardless()
@@ -35,12 +35,7 @@ enum CustomPromptPanel {
     }
 
     private final class PanelHost: ObservableObject {
-        let panel: NSPanel
         @Published var text = ""
-
-        init(panel: NSPanel) {
-            self.panel = panel
-        }
 
         @MainActor
         func cancel() {

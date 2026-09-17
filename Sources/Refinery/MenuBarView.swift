@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// The menu-bar UI: preset picker, status, settings, quit.
-struct MenuBarView: View {
+public struct MenuBarView: View {
     @ObservedObject var model: AppModel
 
     @ViewBuilder
@@ -18,7 +18,11 @@ struct MenuBarView: View {
         }
     }
 
-    var body: some View {
+    public init(model: AppModel) {
+        self.model = model
+    }
+
+    public var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             statusLine
                 .font(.callout)

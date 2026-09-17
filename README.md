@@ -43,6 +43,9 @@ Refinery needs the **Accessibility** permission to read the selected text in
 other apps. On first hotkey press the app surfaces this and macOS shows its
 standard permission prompt: grant Refinery (or your terminal, when running
 from one) access under System Settings -> Privacy & Security -> Accessibility.
+Recording a global hotkey also needs **Input Monitoring** permission. macOS
+prompts for it when recording starts; grant access under System Settings ->
+Privacy & Security -> Input Monitoring.
 
 ## Settings
 

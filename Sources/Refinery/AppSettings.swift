@@ -4,6 +4,10 @@ import Foundation
 ///
 /// Deliberately excludes the API key, which lives only in the Keychain.
 struct AppSettings: Codable, Equatable {
+    enum LoadError: Error {
+        case unreadable
+    }
+
     /// OpenAI-compatible base URL, e.g. "https://api.ucloud-ai.com/v1".
     var baseURL: String
     /// Model name sent to chat completions.
@@ -17,24 +21,24 @@ struct AppSettings: Codable, Equatable {
 
     static let defaultsKey = "com.refinery.app.settings"
 
-    static func load() -> AppSettings {
+    static func load(from defaults: UserDefaults = .standard) throws -> AppSettings {
         let fallback = AppSettings(
             baseURL: "https://api.ucloud-ai.com/v1",
             model: "ucloud-ai"
         )
-        guard let data = UserDefaults.standard.data(forKey: Self.defaultsKey) else {
+        guard let data = defaults.data(forKey: Self.defaultsKey) else {
             return fallback
         }
         do {
             return try JSONDecoder().decode(AppSettings.self, from: data)
         } catch {
-            return fallback
+            throw LoadError.unreadable
         }
     }
 
-    func save() {
+    func save(to defaults: UserDefaults = .standard) {
         if let data = try? JSONEncoder().encode(self) {
-            UserDefaults.standard.set(data, forKey: Self.defaultsKey)
+            defaults.set(data, forKey: Self.defaultsKey)
         }
     }
 }

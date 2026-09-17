@@ -5,12 +5,13 @@ import SwiftUI
 /// Application state: settings, preset selection, hotkey handling and the
 /// polish pipeline (selection -> endpoint -> clipboard).
 @MainActor
-final class AppModel: ObservableObject {
+public final class AppModel: ObservableObject {
     // MARK: Published state
-    @Published var settings = AppSettings.load()
+    @Published var settings: AppSettings
     @Published var lastOutcome: Outcome?
     @Published var apiKeyPresent = KeychainStore.hasAPIKey()
     @Published var isRunning = false
+    @Published private(set) var settingsAreReadable: Bool
 
     enum Outcome: Equatable {
         case polished
@@ -21,11 +22,18 @@ final class AppModel: ObservableObject {
     private let hotkeyCenter = HotkeyCenter()
 
     /// Exposes hotkey wiring to the app delegate.
-    func setTrigger(_ handler: @escaping () -> Void) {
+    public func setTrigger(_ handler: @escaping () -> Void) {
         hotkeyCenter.onTrigger = handler
     }
 
-    init() {
+    public init() {
+        do {
+            settings = try AppSettings.load()
+            settingsAreReadable = true
+        } catch {
+            settings = AppSettings(baseURL: "", model: "")
+            settingsAreReadable = false
+        }
         applyHotkey()
     }
 
@@ -33,6 +41,7 @@ final class AppModel: ObservableObject {
     func update(_ mutate: (inout AppSettings) -> Void) {
         mutate(&settings)
         settings.save()
+        settingsAreReadable = true
     }
 
     var baseURL: URL? {
@@ -68,8 +77,13 @@ final class AppModel: ObservableObject {
     }
 
     // MARK: The pipeline
-    func handleHotkey() {
+    public func handleHotkey() {
         guard !isRunning, NSApp.modalWindow == nil else { return }
+
+        guard settingsAreReadable else {
+            lastOutcome = .failure("Settings are unreadable. Re-open Refinery settings to reconfigure the endpoint.")
+            return
+        }
 
         guard SelectionReader.isAccessibilityEnabled() else {
             lastOutcome = .failure("Accessibility permission is required to read the selected text.")
@@ -83,8 +97,7 @@ final class AppModel: ObservableObject {
             return
         }
 
-        guard let url = baseURL, let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https" else {
+        guard let url = baseURL, EndpointClient.isAllowedBaseURL(url) else {
             lastOutcome = .failure(EndpointError.invalidBaseURL.localizedDescription)
             return
         }
@@ -117,7 +130,9 @@ final class AppModel: ObservableObject {
                     custom: custom,
                     key: apiKey
                 )
-                ClipboardStore.write(result)
+                guard ClipboardStore.write(result) else {
+                    throw ClipboardError.writeFailed
+                }
                 lastOutcome = .polished
                 isRunning = false
             } catch {

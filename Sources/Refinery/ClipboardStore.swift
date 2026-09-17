@@ -1,9 +1,9 @@
 import AppKit
 
 /// Owns the clipboard read/write around a polish run.
-enum ClipboardStore {
+public enum ClipboardStore {
     /// Reads the current pasteboard string, whatever it is.
-    static func read() -> String? {
+    public static func read() -> String? {
         let pasteboard = NSPasteboard.general
         guard let content = pasteboard.string(forType: .string) else { return nil }
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -11,9 +11,17 @@ enum ClipboardStore {
     }
 
     /// Writes the polished text to the clipboard.
-    static func write(_ text: String) {
-        let pasteboard = NSPasteboard.general
+    @discardableResult
+    public static func write(_ text: String, to pasteboard: NSPasteboard = .general) -> Bool {
         pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
+        return pasteboard.setString(text, forType: .string)
+    }
+}
+
+enum ClipboardError: LocalizedError {
+    case writeFailed
+
+    var errorDescription: String? {
+        "Could not write the polished text to the clipboard."
     }
 }

@@ -5,12 +5,22 @@ let package = Package(
     name: "Refinery",
     platforms: [.macOS(.v13)],
     products: [
-        .executable(name: "Refinery", targets: ["Refinery"])
+        .executable(name: "Refinery", targets: ["RefineryApp"])
     ],
     targets: [
-        .executableTarget(
+        .target(
             name: "Refinery",
             path: "Sources/Refinery"
+        ),
+        .executableTarget(
+            name: "RefineryApp",
+            dependencies: ["Refinery"],
+            path: "Sources/RefineryApp"
+        ),
+        .executableTarget(
+            name: "RefineryE2E",
+            dependencies: ["Refinery"],
+            path: "Sources/RefineryE2E"
         ),
         .testTarget(
             name: "RefineryTests",

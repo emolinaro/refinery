@@ -155,6 +155,15 @@ final class RecordingSession {
     }
 
     func start() {
+        guard CGPreflightListenEventAccess() || CGRequestListenEventAccess() else {
+            finish(
+                keyCode: nil,
+                modifiers: nil,
+                reason: "Input Monitoring permission is required to record a hotkey."
+            )
+            return
+        }
+
         let mask = CGEventMask(1 << CGEventType.keyDown.rawValue)
         let callback: CGEventTapCallBack = { _, _, event, userInfo in
             guard let userInfo else { return Unmanaged.passUnretained(event) }
@@ -175,7 +184,7 @@ final class RecordingSession {
             finish(
                 keyCode: nil,
                 modifiers: nil,
-                reason: "Could not listen for keyboard events; check the Accessibility permission."
+                reason: "Could not listen for keyboard events; check Input Monitoring permission."
             )
             return
         }

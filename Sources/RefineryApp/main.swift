@@ -1,8 +1,9 @@
 import AppKit
+import Refinery
 import SwiftUI
 
 @main
-struct RefineryApp: App {
+struct RefineryApplication: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
@@ -16,24 +17,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Smoke-test mode: run the e2e pipeline instead of the menu bar.
-        if ProcessInfo.processInfo.environment["E2E_BASE_URL"] != nil {
-            E2E.run()
-        }
-
-        // The menu-bar item (with its embedded settings panel) is the only UI surface.
         NSApp.setActivationPolicy(.accessory)
 
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.image = NSImage(systemSymbolName: "wand.and.stars", accessibilityDescription: "Refinery")
         item.button?.image?.size = NSSize(width: 18, height: 18)
-        self.statusItem = item
+        statusItem = item
 
         let menu = NSMenu()
-        let contentView = MenuBarView(model: model)
-        let topView = NSHostingView(rootView: contentView)
         let topItem = NSMenuItem()
-        topItem.view = topView
+        topItem.view = NSHostingView(rootView: MenuBarView(model: model))
         menu.addItem(topItem)
         item.menu = menu
 
