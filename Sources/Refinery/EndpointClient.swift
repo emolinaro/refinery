@@ -16,6 +16,7 @@ public enum EndpointError: LocalizedError, Equatable {
     case invalidResponse
     /// The response carried no choices or an empty message.
     case emptyCompletion
+    case incompleteCompletion(String)
 
     public var errorDescription: String? {
         switch self {
@@ -34,6 +35,8 @@ public enum EndpointError: LocalizedError, Equatable {
             return "The endpoint returned a response Refinery could not parse."
         case .emptyCompletion:
             return "The endpoint returned an empty result."
+        case .incompleteCompletion(let reason):
+            return "The endpoint returned an incomplete result (\(reason))."
         }
     }
 }
@@ -57,10 +60,15 @@ public struct EndpointClient {
     private struct ResponseBody: Codable {
         struct Choice: Codable {
             struct Message: Codable {
-                var role: String?
                 var content: String?
             }
             var message: Message?
+            var finishReason: String?
+
+            enum CodingKeys: String, CodingKey {
+                case message
+                case finishReason = "finish_reason"
+            }
         }
         var choices: [Choice]?
     }
@@ -161,7 +169,13 @@ public struct EndpointClient {
             throw EndpointError.invalidResponse
         }
 
-        guard let content = decoded.choices?.first?.message?.content,
+        guard let choice = decoded.choices?.first else {
+            throw EndpointError.emptyCompletion
+        }
+        if let reason = choice.finishReason, ["length", "content_filter"].contains(reason) {
+            throw EndpointError.incompleteCompletion(reason)
+        }
+        guard let content = choice.message?.content,
               !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw EndpointError.emptyCompletion
         }

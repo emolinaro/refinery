@@ -8,6 +8,11 @@ import SwiftUI
 /// with Escape) before the polish request fires.
 @MainActor
 enum CustomPromptPanel {
+    static func normalizedPrompt(_ text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
     /// Shows the panel and returns the typed prompt, or nil when cancelled.
     static func prompt() -> String? {
         let panel = NSPanel(
@@ -28,8 +33,7 @@ enum CustomPromptPanel {
         let response = NSApp.runModal(for: panel)
         panel.close()
         if response == .OK {
-            let trimmed = host.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? nil : trimmed
+            return normalizedPrompt(host.text)
         }
         return nil
     }
@@ -44,6 +48,7 @@ enum CustomPromptPanel {
 
         @MainActor
         func commit() {
+            guard CustomPromptPanel.normalizedPrompt(text) != nil else { return }
             NSApp.stopModal(withCode: .OK)
         }
     }
@@ -66,6 +71,7 @@ enum CustomPromptPanel {
                         .keyboardShortcut(.cancelAction)
                     Button("Polish", action: host.commit)
                         .keyboardShortcut(.defaultAction)
+                        .disabled(CustomPromptPanel.normalizedPrompt(host.text) == nil)
                 }
             }
             .padding(16)

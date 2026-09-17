@@ -8,6 +8,7 @@ import Security
 /// reading code never handles raw key bytes outside of a request.
 enum KeychainStore {
     private static let service = "com.refinery.app.endpoint-key"
+    typealias CopyMatching = (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus
 
     enum KeychainError: LocalizedError {
         case unexpectedStatus(OSStatus)
@@ -50,7 +51,7 @@ enum KeychainStore {
     }
 
     /// Reads the saved API key, if any.
-    static func readAPIKey() -> String? {
+    static func readAPIKey(copyMatching: CopyMatching = SecItemCopyMatching) throws -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -58,14 +59,21 @@ enum KeychainStore {
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let data = result as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+        var result: CFTypeRef?
+        let status = copyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound { return nil }
+        guard status == errSecSuccess else {
+            throw KeychainError.unexpectedStatus(status)
+        }
+        guard let data = result as? Data,
+              let key = String(data: data, encoding: .utf8) else {
+            throw KeychainError.unexpectedStatus(errSecDecode)
+        }
+        return key
     }
 
     /// True when a key is saved.
     static func hasAPIKey() -> Bool {
-        readAPIKey() != nil
+        (try? readAPIKey()) != nil
     }
 }

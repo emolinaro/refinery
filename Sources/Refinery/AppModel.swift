@@ -102,15 +102,22 @@ public final class AppModel: ObservableObject {
             return
         }
 
-        guard let key = KeychainStore.readAPIKey() else {
-            lastOutcome = .failure(EndpointError.missingAPIKey.localizedDescription)
+        let key: String
+        do {
+            guard let savedKey = try KeychainStore.readAPIKey() else {
+                lastOutcome = .failure(EndpointError.missingAPIKey.localizedDescription)
+                return
+            }
+            key = savedKey
+        } catch {
+            lastOutcome = .failure(error.localizedDescription)
             return
         }
 
         // Custom preset requires a typed prompt; the panel returns nil when cancelled.
         var customPrompt: String?
         if settings.preset == .customOneOff {
-            guard let typed = CustomPromptPanel.prompt(), !typed.isEmpty else { return }
+            guard let typed = CustomPromptPanel.prompt() else { return }
             customPrompt = typed
         }
 

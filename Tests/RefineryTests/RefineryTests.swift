@@ -1,6 +1,7 @@
 import XCTest
 import AppKit
 import Carbon.HIToolbox
+import Security
 @testable import Refinery
 
 final class PresetPromptBuilderTests: XCTestCase {
@@ -283,6 +284,61 @@ final class EndpointClientTests: XCTestCase {
             XCTAssertEqual(error, .emptyCompletion)
         } catch {
             XCTFail("unexpected error type \(error)")
+        }
+    }
+
+    func testIncompleteCompletionSurfacesError() async {
+        for reason in ["length", "content_filter"] {
+            let response = EndpointClient.Transport.send { request in
+                let data = Data("{\"choices\":[{\"message\":{\"content\":\"Partial\"},\"finish_reason\":\"\(reason)\"}]}".utf8)
+                return (data, HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!)
+            }
+            let client = EndpointClient(
+                baseURL: URL(string: "https://api.example.com/v1")!,
+                model: "test-model",
+                transport: response
+            )
+
+            do {
+                _ = try await client.polish("text", preset: .polish, apiKey: "dummy")
+                XCTFail("expected incompleteCompletion")
+            } catch let error as EndpointError {
+                XCTAssertEqual(error, .incompleteCompletion(reason))
+            } catch {
+                XCTFail("unexpected error type \(error)")
+            }
+        }
+    }
+}
+
+@MainActor
+final class CustomPromptPanelTests: XCTestCase {
+    func testNormalizedPromptRejectsBlankInput() {
+        XCTAssertNil(CustomPromptPanel.normalizedPrompt(" \n\t "))
+    }
+
+    func testNormalizedPromptTrimsInput() {
+        XCTAssertEqual(CustomPromptPanel.normalizedPrompt("  Make it direct. \n"), "Make it direct.")
+    }
+}
+
+final class KeychainStoreTests: XCTestCase {
+    func testMissingItemReturnsNil() throws {
+        let key = try KeychainStore.readAPIKey { _, _ in errSecItemNotFound }
+        XCTAssertNil(key)
+    }
+
+    func testUnexpectedStatusIsPropagated() {
+        XCTAssertThrowsError(try KeychainStore.readAPIKey { _, _ in errSecAuthFailed }) { error in
+            guard case KeychainStore.KeychainError.unexpectedStatus(let status) = error else {
+                return XCTFail("unexpected error \(error)")
+            }
+            XCTAssertEqual(status, errSecAuthFailed)
         }
     }
 }
