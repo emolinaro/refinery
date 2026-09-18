@@ -24,15 +24,23 @@ public final class AppModel: ObservableObject {
     private let accessibilityEnabled: () -> Bool
     private let accessibilityPrompt: () -> Void
     private let frontmostApplicationPID: () -> pid_t?
-    private let readSelection: @Sendable (pid_t) -> SelectionReader.Outcome
+    private let captureSelectionContext: (pid_t) -> SelectionReader.Context?
+    private let readSelection: @Sendable (SelectionReader.Context) -> SelectionReader.Outcome
     private let readAPIKey: (URL) throws -> String?
     private let polish: @Sendable (URL, String, String, Preset, String?, String) async throws -> String
     private let writeClipboard: (String) -> Result<Void, ClipboardError>
+
+    private enum APIKeySnapshot: Sendable {
+        case available(String)
+        case missing
+        case failure(String)
+    }
 
     private struct RequestConfiguration: Sendable {
         let baseURL: URL?
         let model: String
         let preset: Preset
+        let apiKey: APIKeySnapshot?
     }
 
     /// Exposes hotkey wiring to the app delegate.
@@ -65,8 +73,11 @@ public final class AppModel: ObservableObject {
         accessibilityEnabled: @escaping () -> Bool = SelectionReader.isAccessibilityEnabled,
         accessibilityPrompt: @escaping () -> Void = SelectionReader.promptForAccessibility,
         frontmostApplicationPID: @escaping () -> pid_t? = SelectionReader.frontmostApplicationPID,
-        readSelection: @escaping @Sendable (pid_t) -> SelectionReader.Outcome = {
-            SelectionReader.readSelection(for: $0)
+        captureSelectionContext: @escaping (pid_t) -> SelectionReader.Context? = {
+            SelectionReader.captureContext(for: $0)
+        },
+        readSelection: @escaping @Sendable (SelectionReader.Context) -> SelectionReader.Outcome = {
+            SelectionReader.readSelection(from: $0)
         },
         readAPIKey: @escaping (URL) throws -> String? = { try KeychainStore.readAPIKey(for: $0) },
         polish: @escaping @Sendable (
@@ -91,6 +102,7 @@ public final class AppModel: ObservableObject {
         self.accessibilityEnabled = accessibilityEnabled
         self.accessibilityPrompt = accessibilityPrompt
         self.frontmostApplicationPID = frontmostApplicationPID
+        self.captureSelectionContext = captureSelectionContext
         self.readSelection = readSelection
         self.readAPIKey = readAPIKey
         self.polish = polish
@@ -177,11 +189,9 @@ public final class AppModel: ObservableObject {
         guard !isRunning, NSApp.modalWindow == nil else { return }
 
         let processIdentifier = frontmostApplicationPID()
-        let configuration = RequestConfiguration(
-            baseURL: baseURL,
-            model: settings.model,
-            preset: settings.preset
-        )
+        let requestBaseURL = baseURL
+        let requestModel = settings.model
+        let requestPreset = settings.preset
 
         guard settingsAreReadable else {
             lastOutcome = .failure("Settings are unreadable. Re-open Refinery settings to reconfigure the endpoint.")
@@ -201,11 +211,39 @@ public final class AppModel: ObservableObject {
             return
         }
 
+        guard let selectionContext = captureSelectionContext(processIdentifier) else {
+            lastOutcome = .failure(
+                "Could not read the selection from the frontmost app. Try again in a moment."
+            )
+            return
+        }
+
+        let apiKey: APIKeySnapshot?
+        if let url = requestBaseURL, EndpointClient.isAllowedBaseURL(url) {
+            do {
+                if let savedKey = try readAPIKey(url) {
+                    apiKey = .available(savedKey)
+                } else {
+                    apiKey = .missing
+                }
+            } catch {
+                apiKey = .failure(error.localizedDescription)
+            }
+        } else {
+            apiKey = nil
+        }
+        let configuration = RequestConfiguration(
+            baseURL: requestBaseURL,
+            model: requestModel,
+            preset: requestPreset,
+            apiKey: apiKey
+        )
+
         isRunning = true
         let readSelection = self.readSelection
         Task { [weak self] in
             let selection = await Task.detached(priority: .userInitiated) {
-                readSelection(processIdentifier)
+                readSelection(selectionContext)
             }.value
             self?.handle(selection: selection, configuration: configuration)
         }
@@ -243,16 +281,21 @@ public final class AppModel: ObservableObject {
             return
         }
 
+        guard let apiKeySnapshot = configuration.apiKey else {
+            lastOutcome = .failure(EndpointError.missingAPIKey.localizedDescription)
+            isRunning = false
+            return
+        }
         let key: String
-        do {
-            guard let savedKey = try readAPIKey(url) else {
-                lastOutcome = .failure(EndpointError.missingAPIKey.localizedDescription)
-                isRunning = false
-                return
-            }
+        switch apiKeySnapshot {
+        case .available(let savedKey):
             key = savedKey
-        } catch {
-            lastOutcome = .failure(error.localizedDescription)
+        case .missing:
+            lastOutcome = .failure(EndpointError.missingAPIKey.localizedDescription)
+            isRunning = false
+            return
+        case .failure(let message):
+            lastOutcome = .failure(message)
             isRunning = false
             return
         }

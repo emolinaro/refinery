@@ -7,6 +7,11 @@ enum SelectionReader {
     typealias AttributeReader = (AXUIElement, CFString) -> (AXError, CFTypeRef?)
     typealias ProcessIdentifierReader = (AXUIElement) -> pid_t?
 
+    struct Context: @unchecked Sendable {
+        let processIdentifier: pid_t
+        fileprivate let element: AXUIElement
+    }
+
     /// The result of reading the current selection.
     enum Outcome: Equatable, Sendable {
         /// Non-empty selected text read from the focused element.
@@ -27,9 +32,29 @@ enum SelectionReader {
         NSWorkspace.shared.frontmostApplication?.processIdentifier
     }
 
-    static func readSelection(for processIdentifier: pid_t) -> Outcome {
-        readSelection(
+    static func captureContext(for processIdentifier: pid_t) -> Context? {
+        captureContext(
             for: processIdentifier,
+            elementResolver: resolveFocusedElement,
+            processIdentifierReader: processIdentifierOfElement
+        )
+    }
+
+    static func captureContext(
+        for processIdentifier: pid_t,
+        elementResolver: (pid_t) -> AXUIElement?,
+        processIdentifierReader: ProcessIdentifierReader
+    ) -> Context? {
+        guard let element = elementResolver(processIdentifier),
+              processIdentifierReader(element) == processIdentifier else {
+            return nil
+        }
+        return Context(processIdentifier: processIdentifier, element: element)
+    }
+
+    static func readSelection(from context: Context) -> Outcome {
+        readSelection(
+            from: context,
             elementResolver: resolveFocusedElement,
             attributeReader: copyAttributeValue,
             sleep: { Thread.sleep(forTimeInterval: $0) }
@@ -37,14 +62,17 @@ enum SelectionReader {
     }
 
     static func readSelection(
-        for processIdentifier: pid_t,
+        from context: Context,
         elementResolver: (pid_t) -> AXUIElement?,
         attributeReader: AttributeReader,
         sleep: (TimeInterval) -> Void
     ) -> Outcome {
         for attempt in 1...settleAttempts {
-            if let element = elementResolver(processIdentifier),
-               let outcome = attemptRead(from: element, attributeReader: attributeReader) {
+            guard let focusedElement = elementResolver(context.processIdentifier),
+                  CFEqual(focusedElement, context.element) else {
+                return .unreadable
+            }
+            if let outcome = attemptRead(from: context.element, attributeReader: attributeReader) {
                 return outcome
             }
             if attempt < settleAttempts {
@@ -206,12 +234,7 @@ enum SelectionReader {
     }
 
     static func isRetriable(_ error: AXError) -> Bool {
-        switch error {
-        case .attributeUnsupported, .noValue, .success:
-            return false
-        default:
-            return true
-        }
+        error == .cannotComplete || error == .invalidUIElement
     }
 
     private static func copyAttributeValue(
