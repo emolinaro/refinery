@@ -22,6 +22,23 @@ public enum ClipboardStore {
             items.contains { $0.string(forType: .string) == text }
         }
 
+        func matches(_ pasteboard: any PasteboardAccess) -> Bool {
+            guard let currentItems = pasteboard.pasteboardItems,
+                  currentItems.count == items.count else {
+                return false
+            }
+            for (expected, current) in zip(items, currentItems) {
+                let expectedTypes = Set(expected.types.map(\.rawValue))
+                let currentTypes = Set(current.types.map(\.rawValue))
+                guard expectedTypes == currentTypes else { return false }
+                for type in expected.types
+                    where expected.data(forType: type) != current.data(forType: type) {
+                    return false
+                }
+            }
+            return true
+        }
+
         fileprivate func makeItems() -> [NSPasteboardItem]? {
             var copies: [NSPasteboardItem] = []
             for item in items {
@@ -55,8 +72,13 @@ public enum ClipboardStore {
 
     static func writeResult(
         _ text: String,
-        to pasteboard: any PasteboardAccess
+        to pasteboard: any PasteboardAccess,
+        ifUnchangedSince expectedChangeCount: Int? = nil
     ) -> Result<Void, ClipboardError> {
+        if let expectedChangeCount,
+           pasteboard.changeCount != expectedChangeCount {
+            return .failure(.clipboardChanged)
+        }
         let capturedSnapshot: Snapshot
         switch snapshot(of: pasteboard) {
         case .success(let captured):
@@ -64,14 +86,28 @@ public enum ClipboardStore {
         case .failure(let error):
             return .failure(error)
         }
-        pasteboard.clearContents()
+        if let expectedChangeCount,
+           pasteboard.changeCount != expectedChangeCount {
+            return .failure(.clipboardChanged)
+        }
+        let writeChangeCount = pasteboard.clearContents()
+        guard pasteboard.changeCount == writeChangeCount else {
+            return .failure(.clipboardChanged)
+        }
         guard pasteboard.setString(text, forType: .string) else {
-            switch restore(capturedSnapshot, to: pasteboard) {
+            guard pasteboard.changeCount == writeChangeCount else {
+                return .failure(.clipboardChanged)
+            }
+            switch restoreWithChangeCount(capturedSnapshot, to: pasteboard) {
             case .success:
                 return .failure(.writeFailed)
-            case .failure:
-                return .failure(.restorationFailed)
+            case .failure(let error):
+                return .failure(error == .clipboardChanged ? error : .restorationFailed)
             }
+        }
+        guard pasteboard.changeCount == writeChangeCount,
+              pasteboard.string(forType: .string) == text else {
+            return .failure(.clipboardChanged)
         }
         return .success(())
     }
@@ -98,14 +134,42 @@ public enum ClipboardStore {
         _ snapshot: Snapshot,
         to pasteboard: any PasteboardAccess
     ) -> Result<Void, ClipboardError> {
+        switch restoreWithChangeCount(snapshot, to: pasteboard) {
+        case .success:
+            return .success(())
+        case .failure(let error):
+            return .failure(error)
+        }
+    }
+
+    static func restoreWithChangeCount(
+        _ snapshot: Snapshot,
+        to pasteboard: any PasteboardAccess
+    ) -> Result<Int, ClipboardError> {
         guard let items = snapshot.makeItems() else {
             return .failure(.restorationFailed)
         }
-        pasteboard.clearContents()
-        guard pasteboard.writeObjects(items) else {
-            return .failure(.restorationFailed)
+        let restoredChangeCount = pasteboard.clearContents()
+        guard pasteboard.changeCount == restoredChangeCount else {
+            return .failure(.clipboardChanged)
         }
-        return .success(())
+        guard pasteboard.writeObjects(items) else {
+            return pasteboard.changeCount == restoredChangeCount
+                ? .failure(.restorationFailed)
+                : .failure(.clipboardChanged)
+        }
+        guard pasteboard.changeCount == restoredChangeCount else {
+            return .failure(.clipboardChanged)
+        }
+        guard snapshot.matches(pasteboard) else {
+            return pasteboard.changeCount == restoredChangeCount
+                ? .failure(.restorationFailed)
+                : .failure(.clipboardChanged)
+        }
+        guard pasteboard.changeCount == restoredChangeCount else {
+            return .failure(.clipboardChanged)
+        }
+        return .success(restoredChangeCount)
     }
 }
 
@@ -126,7 +190,7 @@ enum ClipboardError: LocalizedError, Equatable, Sendable {
         case .selectionUnverified:
             return "Could not verify that text is selected, so Command-C was not sent."
         case .clipboardChanged:
-            return "The clipboard changed during selection capture, so its newer contents were preserved."
+            return "The clipboard changed during processing, so its newer contents were preserved."
         case .writeFailed:
             return "Could not write the polished text to the clipboard."
         case .restorationFailed:

@@ -12,6 +12,7 @@ enum SelectionReader {
     enum Outcome: Equatable, Sendable {
         /// Non-empty selected text read from the focused element.
         case selected(String)
+        case clipboardSelection(String, expectedChangeCount: Int)
         /// The focused element resolved but carries no selection.
         case noSelection
         /// The bound focus or selection changed, or the focused app failed the
@@ -59,15 +60,6 @@ enum SelectionReader {
 
     static func frontmostApplicationPID() -> pid_t? {
         NSWorkspace.shared.frontmostApplication?.processIdentifier
-    }
-
-    static func captureContext(for processIdentifier: pid_t) -> Context? {
-        captureContext(
-            for: processIdentifier,
-            elementResolver: resolveFocusedElement,
-            processIdentifierReader: processIdentifierOfElement,
-            attributeReader: copyAttributeValue
-        )
     }
 
     static func capture(for processIdentifier: pid_t) -> Capture {
@@ -159,25 +151,6 @@ enum SelectionReader {
             attributeReader: attributeReader,
             childrenReader: childrenReader
         ) == .absent
-    }
-
-    static func captureContext(
-        for processIdentifier: pid_t,
-        elementResolver: (pid_t) -> ElementResolution,
-        processIdentifierReader: ProcessIdentifierReader,
-        attributeReader: AttributeReader
-    ) -> Context? {
-        guard case .resolved(let element) = elementResolver(processIdentifier),
-              processIdentifierReader(element) == processIdentifier,
-              let selection = attemptRead(from: element, attributeReader: attributeReader),
-              selection != .unreadable else {
-            return nil
-        }
-        return Context(
-            processIdentifier: processIdentifier,
-            selection: selection,
-            element: element
-        )
     }
 
     static func readSelection(from context: Context) -> Outcome {

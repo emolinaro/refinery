@@ -31,7 +31,7 @@ public final class AppModel: ObservableObject {
     ) async -> SelectionReader.Outcome
     private let readAPIKey: (URL) throws -> String?
     private let polish: @Sendable (URL, String, String, Preset, String?, String) async throws -> String
-    private let writeClipboard: (String) -> Result<Void, ClipboardError>
+    private let writeClipboard: (String, Int?) -> Result<Void, ClipboardError>
 
     private enum APIKeySnapshot: Sendable {
         case available(String)
@@ -97,8 +97,12 @@ public final class AppModel: ObservableObject {
             let client = EndpointClient(baseURL: baseURL, model: model)
             return try await client.polish(text, preset: preset, customPrompt: custom, apiKey: key)
         },
-        writeClipboard: @escaping (String) -> Result<Void, ClipboardError> = {
-            ClipboardStore.writeResult($0, to: NSPasteboard.general)
+        writeClipboard: @escaping (String, Int?) -> Result<Void, ClipboardError> = {
+            ClipboardStore.writeResult(
+                $0,
+                to: NSPasteboard.general,
+                ifUnchangedSince: $1
+            )
         }
     ) {
         self.settings = settings
@@ -271,9 +275,14 @@ public final class AppModel: ObservableObject {
         configuration: RequestConfiguration
     ) {
         let selected: String
+        let expectedClipboardChangeCount: Int?
         switch selection {
         case .selected(let text):
             selected = text
+            expectedClipboardChangeCount = nil
+        case .clipboardSelection(let text, let expectedChangeCount):
+            selected = text
+            expectedClipboardChangeCount = expectedChangeCount
         case .noSelection:
             lastOutcome = .emptySelection
             isRunning = false
@@ -334,6 +343,7 @@ public final class AppModel: ObservableObject {
         let selectedText = selected
         let custom = customPrompt
         let apiKey = key
+        let expectedChangeCount = expectedClipboardChangeCount
         Task { @MainActor in
             do {
                 let result = try await polish(
@@ -344,7 +354,7 @@ public final class AppModel: ObservableObject {
                     custom,
                     apiKey
                 )
-                switch writeClipboard(result) {
+                switch writeClipboard(result, expectedChangeCount) {
                 case .success:
                     break
                 case .failure(let error):
