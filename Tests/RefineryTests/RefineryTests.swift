@@ -925,7 +925,7 @@ final class AppModelHotkeyTests: XCTestCase {
         XCTAssertFalse(hotkeys.isTriggerSuppressed)
     }
 
-    func testSelectionReadDoesNotBlockMainActor() async throws {
+    func testSelectionValidationDoesNotBlockMainActor() async throws {
         _ = NSApplication.shared
         let readStarted = expectation(description: "selection read started")
         let releaseRead = DispatchSemaphore(value: 0)
@@ -1324,8 +1324,14 @@ private func makeSelectionContext(processIdentifier: pid_t) -> SelectionReader.C
     let element = AXUIElementCreateApplication(processIdentifier)
     return SelectionReader.captureContext(
         for: processIdentifier,
-        elementResolver: { _ in element },
-        processIdentifierReader: { _ in processIdentifier }
+        elementResolver: { _ in .resolved(element) },
+        processIdentifierReader: { _ in processIdentifier },
+        attributeReader: { _, attribute in
+            attribute as String == kAXSelectedTextAttribute
+                ? (.success, "" as CFString)
+                : (.attributeUnsupported, nil)
+        },
+        sleep: { _ in }
     )!
 }
 
@@ -1442,8 +1448,8 @@ final class SelectionReaderTests: XCTestCase {
         let element = AXUIElementCreateSystemWide()
 
         let outcome = SelectionReader.readSelection(
-            from: context(for: element),
-            elementResolver: { _ in element },
+            from: context(for: element, selection: .selected("brave")),
+            elementResolver: { _ in .resolved(element) },
             attributeReader: { _, attribute in
                 switch attribute as String {
                 case kAXSelectedTextAttribute:
@@ -1473,8 +1479,8 @@ final class SelectionReaderTests: XCTestCase {
         let element = AXUIElementCreateSystemWide()
 
         let outcome = SelectionReader.readSelection(
-            from: context(for: element),
-            elementResolver: { _ in element },
+            from: context(for: element, selection: .selected("brave")),
+            elementResolver: { _ in .resolved(element) },
             attributeReader: { _, attribute in
                 switch attribute as String {
                 case kAXSelectedTextAttribute:
@@ -1502,7 +1508,7 @@ final class SelectionReaderTests: XCTestCase {
 
         let outcome = SelectionReader.readSelection(
             from: context(for: element),
-            elementResolver: { _ in element },
+            elementResolver: { _ in .resolved(element) },
             attributeReader: { _, attribute in
                 switch attribute as String {
                 case kAXSelectedTextAttribute:
@@ -1526,7 +1532,7 @@ final class SelectionReaderTests: XCTestCase {
 
         let outcome = SelectionReader.readSelection(
             from: context(for: element),
-            elementResolver: { _ in element },
+            elementResolver: { _ in .resolved(element) },
             attributeReader: { _, attribute in
                 switch attribute as String {
                 case kAXSelectedTextAttribute:
@@ -1550,7 +1556,7 @@ final class SelectionReaderTests: XCTestCase {
 
         let outcome = SelectionReader.readSelection(
             from: context(for: element),
-            elementResolver: { _ in element },
+            elementResolver: { _ in .resolved(element) },
             attributeReader: { _, attribute in
                 switch attribute as String {
                 case kAXSelectedTextAttribute:
@@ -1567,19 +1573,126 @@ final class SelectionReaderTests: XCTestCase {
         XCTAssertEqual(outcome, .unreadable)
     }
 
+    func testSelectionChangeBeforeReadReturnsUnreadable() {
+        let element = AXUIElementCreateApplication(101)
+        let context = context(for: element, selection: .selected("original selection"))
+
+        let outcome = SelectionReader.readSelection(
+            from: context,
+            elementResolver: { _ in .resolved(element) },
+            attributeReader: attributeReader(for: .selected("replacement selection")),
+            sleep: { _ in }
+        )
+
+        XCTAssertEqual(outcome, .unreadable)
+    }
+
+    func testSelectionChangeDuringRetryReturnsUnreadable() {
+        let element = AXUIElementCreateApplication(101)
+        let context = context(for: element, selection: .selected("original selection"))
+        var readAttempts = 0
+        var currentSelection = "original selection"
+
+        let outcome = SelectionReader.readSelection(
+            from: context,
+            elementResolver: { _ in .resolved(element) },
+            attributeReader: { _, attribute in
+                guard attribute as String == kAXSelectedTextAttribute else {
+                    return (.attributeUnsupported, nil)
+                }
+                readAttempts += 1
+                return readAttempts == 1
+                    ? (.cannotComplete, nil)
+                    : (.success, currentSelection as CFString)
+            },
+            sleep: { _ in currentSelection = "replacement selection" }
+        )
+
+        XCTAssertEqual(outcome, .unreadable)
+        XCTAssertEqual(readAttempts, 2)
+    }
+
+    func testCaptureContextRetriesTransientResolutionFailure() throws {
+        let element = AXUIElementCreateApplication(101)
+        var resolutionAttempts = 0
+
+        let context = try XCTUnwrap(SelectionReader.captureContext(
+            for: 101,
+            elementResolver: { _ in
+                resolutionAttempts += 1
+                return resolutionAttempts == 1
+                    ? .failed(.cannotComplete)
+                    : .resolved(element)
+            },
+            processIdentifierReader: { _ in 101 },
+            attributeReader: attributeReader(for: .selected("selection")),
+            sleep: { _ in }
+        ))
+
+        XCTAssertEqual(context.selection, .selected("selection"))
+        XCTAssertEqual(resolutionAttempts, 2)
+    }
+
+    func testCaptureContextRejectsElementChangeDuringRetry() {
+        let originalElement = AXUIElementCreateApplication(101)
+        let replacementElement = AXUIElementCreateApplication(202)
+        var focusedElement = originalElement
+        var readAttempts = 0
+
+        let context = SelectionReader.captureContext(
+            for: 101,
+            elementResolver: { _ in .resolved(focusedElement) },
+            processIdentifierReader: { _ in 101 },
+            attributeReader: { _, attribute in
+                guard attribute as String == kAXSelectedTextAttribute else {
+                    return (.attributeUnsupported, nil)
+                }
+                readAttempts += 1
+                return (.cannotComplete, nil)
+            },
+            sleep: { _ in focusedElement = replacementElement }
+        )
+
+        XCTAssertNil(context)
+        XCTAssertEqual(readAttempts, 1)
+    }
+
+    func testReadRetriesTransientResolutionFailure() {
+        let element = AXUIElementCreateApplication(101)
+        let context = context(for: element, selection: .selected("selection"))
+        var resolutionAttempts = 0
+
+        let outcome = SelectionReader.readSelection(
+            from: context,
+            elementResolver: { _ in
+                resolutionAttempts += 1
+                return resolutionAttempts == 1
+                    ? .failed(.cannotComplete)
+                    : .resolved(element)
+            },
+            attributeReader: attributeReader(for: .selected("selection")),
+            sleep: { _ in }
+        )
+
+        XCTAssertEqual(outcome, .selected("selection"))
+        XCTAssertEqual(resolutionAttempts, 2)
+    }
+
     func testFocusChangeBeforeReadReturnsUnreadable() throws {
         let originalElement = AXUIElementCreateApplication(101)
         let replacementElement = AXUIElementCreateApplication(202)
         var focusedElement = originalElement
         var resolutionCount = 0
-        let resolveFocusedElement: (pid_t) -> AXUIElement? = { _ in
+        let resolveFocusedElement: (pid_t) -> SelectionReader.ElementResolution = { _ in
             resolutionCount += 1
-            return focusedElement
+            return .resolved(focusedElement)
         }
         let context = try XCTUnwrap(SelectionReader.captureContext(
             for: 101,
             elementResolver: resolveFocusedElement,
-            processIdentifierReader: { _ in 101 }
+            processIdentifierReader: { _ in 101 },
+            attributeReader: attributeReader(for: .selected("selection")),
+            sleep: { _ in }
         ))
         focusedElement = replacementElement
         var readAttempts = 0
@@ -1607,14 +1720,16 @@ final class SelectionReaderTests: XCTestCase {
         let replacementElement = AXUIElementCreateApplication(202)
         var focusedElement = originalElement
         var resolutionCount = 0
-        let resolveFocusedElement: (pid_t) -> AXUIElement? = { _ in
+        let resolveFocusedElement: (pid_t) -> SelectionReader.ElementResolution = { _ in
             resolutionCount += 1
-            return focusedElement
+            return .resolved(focusedElement)
         }
         let context = try XCTUnwrap(SelectionReader.captureContext(
             for: 101,
             elementResolver: resolveFocusedElement,
-            processIdentifierReader: { _ in 101 }
+            processIdentifierReader: { _ in 101 },
+            attributeReader: attributeReader(for: .selected("selection")),
+            sleep: { _ in }
         ))
         var readAttempts = 0
 
@@ -1639,14 +1754,16 @@ final class SelectionReaderTests: XCTestCase {
     func testInvalidCapturedElementReturnsUnreadable() throws {
         let staleElement = AXUIElementCreateApplication(101)
         var resolutionCount = 0
-        let resolveFocusedElement: (pid_t) -> AXUIElement? = { _ in
+        let resolveFocusedElement: (pid_t) -> SelectionReader.ElementResolution = { _ in
             resolutionCount += 1
-            return staleElement
+            return .resolved(staleElement)
         }
         let context = try XCTUnwrap(SelectionReader.captureContext(
             for: 101,
             elementResolver: resolveFocusedElement,
-            processIdentifierReader: { _ in 101 }
+            processIdentifierReader: { _ in 101 },
+            attributeReader: attributeReader(for: .selected("selection")),
+            sleep: { _ in }
         ))
         var invalidAttempts = 0
 
@@ -1673,8 +1790,10 @@ final class SelectionReaderTests: XCTestCase {
 
         let context = SelectionReader.captureContext(
             for: 101,
-            elementResolver: { _ in foreignElement },
-            processIdentifierReader: { _ in 202 }
+            elementResolver: { _ in .resolved(foreignElement) },
+            processIdentifierReader: { _ in 202 },
+            attributeReader: attributeReader(for: .selected("selection")),
+            sleep: { _ in }
         )
 
         XCTAssertNil(context)
@@ -1701,10 +1820,13 @@ final class SelectionReaderTests: XCTestCase {
             }
         )
 
-        XCTAssertTrue(CFEqual(try XCTUnwrap(resolved), targetElement))
+        guard case .resolved(let element) = resolved else {
+            return XCTFail("Expected the PID-constrained fallback element")
+        }
+        XCTAssertTrue(CFEqual(element, targetElement))
     }
 
-    func testSystemWideFocusedElementFromDifferentProcessIsRejected() {
+    func testFocusedElementResolutionPreservesRetriableError() {
         let targetProcessIdentifier: pid_t = 101
         let application = AXUIElementCreateApplication(targetProcessIdentifier)
         let systemWide = AXUIElementCreateSystemWide()
@@ -1722,14 +1844,40 @@ final class SelectionReaderTests: XCTestCase {
             processIdentifierReader: { _ in 202 }
         )
 
-        XCTAssertNil(resolved)
+        guard case .failed(let error) = resolved else {
+            return XCTFail("Expected focused-element resolution to fail")
+        }
+        XCTAssertEqual(error, .cannotComplete)
     }
 
-    private func context(for element: AXUIElement) -> SelectionReader.Context {
+    private func context(
+        for element: AXUIElement,
+        selection: SelectionReader.Outcome = .noSelection
+    ) -> SelectionReader.Context {
         SelectionReader.captureContext(
             for: 101,
-            elementResolver: { _ in element },
-            processIdentifierReader: { _ in 101 }
+            elementResolver: { _ in .resolved(element) },
+            processIdentifierReader: { _ in 101 },
+            attributeReader: attributeReader(for: selection),
+            sleep: { _ in }
         )!
+    }
+
+    private func attributeReader(
+        for selection: SelectionReader.Outcome
+    ) -> SelectionReader.AttributeReader {
+        { _, attribute in
+            guard attribute as String == kAXSelectedTextAttribute else {
+                return (.attributeUnsupported, nil)
+            }
+            switch selection {
+            case .selected(let text):
+                return (.success, text as CFString)
+            case .noSelection:
+                return (.success, "" as CFString)
+            case .unreadable:
+                return (.failure, nil)
+            }
+        }
     }
 }

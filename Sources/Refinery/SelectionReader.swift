@@ -7,11 +7,6 @@ enum SelectionReader {
     typealias AttributeReader = (AXUIElement, CFString) -> (AXError, CFTypeRef?)
     typealias ProcessIdentifierReader = (AXUIElement) -> pid_t?
 
-    struct Context: @unchecked Sendable {
-        let processIdentifier: pid_t
-        fileprivate let element: AXUIElement
-    }
-
     /// The result of reading the current selection.
     enum Outcome: Equatable, Sendable {
         /// Non-empty selected text read from the focused element.
@@ -20,6 +15,17 @@ enum SelectionReader {
         case noSelection
         /// No focused element answered, or the focused app failed the query.
         case unreadable
+    }
+
+    struct Context: @unchecked Sendable {
+        let processIdentifier: pid_t
+        let selection: Outcome
+        fileprivate let element: AXUIElement
+    }
+
+    enum ElementResolution {
+        case resolved(AXUIElement)
+        case failed(AXError)
     }
 
     /// AX queries can fail transiently with `kAXErrorCannotComplete` while
@@ -36,20 +42,46 @@ enum SelectionReader {
         captureContext(
             for: processIdentifier,
             elementResolver: resolveFocusedElement,
-            processIdentifierReader: processIdentifierOfElement
+            processIdentifierReader: processIdentifierOfElement,
+            attributeReader: copyAttributeValue,
+            sleep: { Thread.sleep(forTimeInterval: $0) }
         )
     }
 
     static func captureContext(
         for processIdentifier: pid_t,
-        elementResolver: (pid_t) -> AXUIElement?,
-        processIdentifierReader: ProcessIdentifierReader
+        elementResolver: (pid_t) -> ElementResolution,
+        processIdentifierReader: ProcessIdentifierReader,
+        attributeReader: AttributeReader,
+        sleep: (TimeInterval) -> Void
     ) -> Context? {
-        guard let element = elementResolver(processIdentifier),
-              processIdentifierReader(element) == processIdentifier else {
-            return nil
+        var capturedElement: AXUIElement?
+        for attempt in 1...settleAttempts {
+            switch elementResolver(processIdentifier) {
+            case .resolved(let element):
+                guard processIdentifierReader(element) == processIdentifier else {
+                    return nil
+                }
+                if let capturedElement, !CFEqual(capturedElement, element) {
+                    return nil
+                }
+                capturedElement = element
+                if let selection = attemptRead(from: element, attributeReader: attributeReader) {
+                    guard selection != .unreadable else { return nil }
+                    return Context(
+                        processIdentifier: processIdentifier,
+                        selection: selection,
+                        element: element
+                    )
+                }
+            case .failed(let error):
+                guard isRetriable(error) else { return nil }
+            }
+            if attempt < settleAttempts {
+                sleep(settleInterval)
+            }
         }
-        return Context(processIdentifier: processIdentifier, element: element)
+        return nil
     }
 
     static func readSelection(from context: Context) -> Outcome {
@@ -63,17 +95,21 @@ enum SelectionReader {
 
     static func readSelection(
         from context: Context,
-        elementResolver: (pid_t) -> AXUIElement?,
+        elementResolver: (pid_t) -> ElementResolution,
         attributeReader: AttributeReader,
         sleep: (TimeInterval) -> Void
     ) -> Outcome {
         for attempt in 1...settleAttempts {
-            guard let focusedElement = elementResolver(context.processIdentifier),
-                  CFEqual(focusedElement, context.element) else {
-                return .unreadable
-            }
-            if let outcome = attemptRead(from: context.element, attributeReader: attributeReader) {
-                return outcome
+            switch elementResolver(context.processIdentifier) {
+            case .resolved(let focusedElement):
+                guard CFEqual(focusedElement, context.element) else {
+                    return .unreadable
+                }
+                if let outcome = attemptRead(from: context.element, attributeReader: attributeReader) {
+                    return outcome == context.selection ? context.selection : .unreadable
+                }
+            case .failed(let error):
+                guard isRetriable(error) else { return .unreadable }
             }
             if attempt < settleAttempts {
                 sleep(settleInterval)
@@ -97,7 +133,7 @@ enum SelectionReader {
 
     // MARK: Focused-element resolution
 
-    private static func resolveFocusedElement(for processIdentifier: pid_t) -> AXUIElement? {
+    private static func resolveFocusedElement(for processIdentifier: pid_t) -> ElementResolution {
         resolveFocusedElement(
             for: processIdentifier,
             applicationElement: AXUIElementCreateApplication,
@@ -113,22 +149,33 @@ enum SelectionReader {
         systemWideElement: () -> AXUIElement,
         attributeReader: AttributeReader,
         processIdentifierReader: ProcessIdentifierReader
-    ) -> AXUIElement? {
+    ) -> ElementResolution {
         let application = applicationElement(processIdentifier)
-        if let element = focusedElement(
+        let applicationResolution = focusedElement(
             of: application,
             expectedProcessIdentifier: processIdentifier,
             attributeReader: attributeReader,
             processIdentifierReader: processIdentifierReader
-        ) {
-            return element
+        )
+        if case .resolved = applicationResolution {
+            return applicationResolution
         }
-        return focusedElement(
+        let systemWideResolution = focusedElement(
             of: systemWideElement(),
             expectedProcessIdentifier: processIdentifier,
             attributeReader: attributeReader,
             processIdentifierReader: processIdentifierReader
         )
+        if case .resolved = systemWideResolution {
+            return systemWideResolution
+        }
+        if case .failed(let error) = systemWideResolution, isRetriable(error) {
+            return systemWideResolution
+        }
+        if case .failed(let error) = applicationResolution, isRetriable(error) {
+            return applicationResolution
+        }
+        return systemWideResolution
     }
 
     private static func focusedElement(
@@ -136,20 +183,23 @@ enum SelectionReader {
         expectedProcessIdentifier: pid_t,
         attributeReader: AttributeReader,
         processIdentifierReader: ProcessIdentifierReader
-    ) -> AXUIElement? {
+    ) -> ElementResolution {
         let (result, focused) = attributeReader(
             owner,
             kAXFocusedUIElementAttribute as CFString
         )
-        guard result == .success, let focused,
+        guard result == .success else {
+            return .failed(result)
+        }
+        guard let focused,
               CFGetTypeID(focused) == AXUIElementGetTypeID() else {
-            return nil
+            return .failed(.failure)
         }
         let element = focused as! AXUIElement
         guard processIdentifierReader(element) == expectedProcessIdentifier else {
-            return nil
+            return .failed(.failure)
         }
-        return element
+        return .resolved(element)
     }
 
     // MARK: Selection reads
