@@ -84,6 +84,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
     }
 
     func popoverDidClose(_ notification: Notification) {
+        guard let popover = notification.object as? NSPopover,
+              popover === settingsPopover else { return }
         model.cancelHotkeyRecording()
         settingsPopover = nil
     }

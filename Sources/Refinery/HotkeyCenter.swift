@@ -96,14 +96,6 @@ final class HotkeyCenter: HotkeyManaging {
 
     func handleMatchedHotkeyEvent() {
         guard !isTriggerSuppressed else { return }
-        DispatchQueue.main.async { [weak self] in
-            MainActor.assumeIsolated { self?.fire() }
-        }
-    }
-
-    /// Fires the trigger on the main thread.
-    private func fire() {
-        guard !isTriggerSuppressed else { return }
         onTrigger?()
     }
 

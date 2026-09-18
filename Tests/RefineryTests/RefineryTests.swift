@@ -62,7 +62,7 @@ final class PresetPromptBuilderTests: XCTestCase {
 
 @MainActor
 final class HotkeyCenterTests: XCTestCase {
-    func testSuppressedEventStaysSuppressedAfterResume() async {
+    func testSuppressedEventDoesNotTrigger() {
         let center = HotkeyCenter()
         var triggerCount = 0
         center.onTrigger = { triggerCount += 1 }
@@ -70,18 +70,16 @@ final class HotkeyCenterTests: XCTestCase {
 
         center.handleMatchedHotkeyEvent()
         center.resume()
-        await drainMainQueue()
 
         XCTAssertEqual(triggerCount, 0)
     }
 
-    func testUnsuppressedEventDispatchesTrigger() async {
+    func testUnsuppressedEventTriggersBeforeHandlerReturns() {
         let center = HotkeyCenter()
         var triggerCount = 0
         center.onTrigger = { triggerCount += 1 }
 
         center.handleMatchedHotkeyEvent()
-        await drainMainQueue()
 
         XCTAssertEqual(triggerCount, 1)
     }
@@ -98,14 +96,6 @@ final class HotkeyCenterTests: XCTestCase {
             modifiers: UInt32(cmdKey | optionKey)
         ))
         XCTAssertEqual(receivedOptions, OptionBits(kEventHotKeyExclusive))
-    }
-
-    private func drainMainQueue() async {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.main.async {
-                continuation.resume()
-            }
-        }
     }
 }
 
