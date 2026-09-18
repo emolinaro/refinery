@@ -1082,15 +1082,19 @@ final class AppModelHotkeyTests: XCTestCase {
         _ = NSApplication.shared
         let capturedRequest = LockedBox<CapturedPolishRequest?>(nil)
         let probedProcessIdentifier = LockedBox<pid_t?>(nil)
+        let clipboardContext = SelectionReader.ClipboardContext(
+            processIdentifier: 101,
+            element: AXUIElementCreateApplication(101)
+        )
         let model = AppModel(
             settings: AppSettings(baseURL: "https://api.example.com/v1", model: "test-model"),
             hotkeyCenter: StubHotkeyManager(registrationResults: [true]),
             accessibilityEnabled: { true },
             frontmostApplicationPID: { 101 },
-            captureSelection: { _ in .clipboardProbe(processIdentifier: 101) },
+            captureSelection: { _ in .clipboardProbe(clipboardContext) },
             readSelection: { _ in XCTFail("AX read must not run for an AX-hostile capture"); return .unreadable },
-            probeClipboardSelection: { processIdentifier in
-                probedProcessIdentifier.set(processIdentifier)
+            probeClipboardSelection: { context in
+                probedProcessIdentifier.set(context.processIdentifier)
                 return .selected("Sublime selection")
             },
             readAPIKey: { _ in "test-key" },
@@ -1344,23 +1348,29 @@ final class ClipboardStoreTests: XCTestCase {
 @MainActor
 final class ClipboardSelectionProbeTests: XCTestCase {
     func testCopyProbeReturnsSelectionAndRestoresEveryRepresentation() async throws {
+        let context = clipboardContext()
         let pasteboard = NSPasteboard(name: .init("RefineryTests.\(UUID().uuidString)"))
         let original = NSPasteboardItem()
         original.setString("original clipboard", forType: .string)
         original.setData(Data([0x01, 0x02]), forType: .init("com.refinery.binary"))
         pasteboard.clearContents()
         XCTAssertTrue(pasteboard.writeObjects([original]))
+        var waitCount = 0
 
         let outcome = await ClipboardSelectionProbe.read(
-            for: 101,
+            for: context,
             pasteboard: pasteboard,
             accessibilityEnabled: { true },
             frontmostApplicationPID: { 101 },
-            synthesizeCopy: {
-                _ = pasteboard.clearContents()
-                return pasteboard.setString("Sublime selection", forType: .string)
-            },
-            wait: { _ in }
+            focusedElementResolver: focusedElementResolver(for: context),
+            synthesizeCopy: { true },
+            wait: { _ in
+                waitCount += 1
+                if waitCount == 1 {
+                    _ = pasteboard.clearContents()
+                    XCTAssertTrue(pasteboard.setString("Sublime selection", forType: .string))
+                }
+            }
         )
 
         XCTAssertEqual(outcome, .selected("Sublime selection"))
@@ -1372,16 +1382,18 @@ final class ClipboardSelectionProbeTests: XCTestCase {
     }
 
     func testCopyProbeDoesNotSynthesizeWhenAccessibilityIsUnavailable() async {
+        let context = clipboardContext()
         let pasteboard = NSPasteboard(name: .init("RefineryTests.\(UUID().uuidString)"))
         pasteboard.clearContents()
         XCTAssertTrue(pasteboard.setString("original", forType: .string))
         var synthesizeCount = 0
 
         let outcome = await ClipboardSelectionProbe.read(
-            for: 101,
+            for: context,
             pasteboard: pasteboard,
             accessibilityEnabled: { false },
             frontmostApplicationPID: { 101 },
+            focusedElementResolver: focusedElementResolver(for: context),
             synthesizeCopy: { synthesizeCount += 1; return true },
             wait: { _ in }
         )
@@ -1391,27 +1403,157 @@ final class ClipboardSelectionProbeTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), "original")
     }
 
+    func testCopyProbeRejectsPasteboardChangesDuringSynthesis() async {
+        let context = clipboardContext()
+        let pasteboard = NSPasteboard(name: .init("RefineryTests.\(UUID().uuidString)"))
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString("original", forType: .string))
+
+        let outcome = await ClipboardSelectionProbe.read(
+            for: context,
+            pasteboard: pasteboard,
+            accessibilityEnabled: { true },
+            frontmostApplicationPID: { 101 },
+            focusedElementResolver: focusedElementResolver(for: context),
+            synthesizeCopy: {
+                _ = pasteboard.clearContents()
+                return pasteboard.setString("unattributed writer", forType: .string)
+            },
+            wait: { _ in }
+        )
+
+        XCTAssertEqual(outcome, .unreadable)
+        XCTAssertEqual(pasteboard.string(forType: .string), "original")
+    }
+
+    func testCopyProbeRejectsTextMatchingThePreProbeClipboard() async {
+        let context = clipboardContext()
+        let pasteboard = NSPasteboard(name: .init("RefineryTests.\(UUID().uuidString)"))
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString("same text", forType: .string))
+        var waitCount = 0
+
+        let outcome = await ClipboardSelectionProbe.read(
+            for: context,
+            pasteboard: pasteboard,
+            accessibilityEnabled: { true },
+            frontmostApplicationPID: { 101 },
+            focusedElementResolver: focusedElementResolver(for: context),
+            synthesizeCopy: { true },
+            wait: { _ in
+                waitCount += 1
+                if waitCount == 1 {
+                    _ = pasteboard.clearContents()
+                    XCTAssertTrue(pasteboard.setString("same text", forType: .string))
+                }
+            }
+        )
+
+        XCTAssertEqual(outcome, .unreadable)
+        XCTAssertEqual(pasteboard.string(forType: .string), "same text")
+    }
+
     func testCopyProbeDoesNotSynthesizeAfterFocusChanges() async {
+        let context = clipboardContext()
         let pasteboard = NSPasteboard(name: .init("RefineryTests.\(UUID().uuidString)"))
         pasteboard.clearContents()
         XCTAssertTrue(pasteboard.setString("original", forType: .string))
         var synthesizeCount = 0
 
         let outcome = await ClipboardSelectionProbe.read(
-            for: 101,
+            for: context,
             pasteboard: pasteboard,
             accessibilityEnabled: { true },
             frontmostApplicationPID: { 202 },
+            focusedElementResolver: focusedElementResolver(for: context),
             synthesizeCopy: { synthesizeCount += 1; return true },
             wait: { _ in }
         )
 
         XCTAssertEqual(outcome, .unreadable)
         XCTAssertEqual(synthesizeCount, 0)
+        XCTAssertEqual(pasteboard.string(forType: .string), "original")
+    }
+
+    func testCopyProbeDoesNotSynthesizeAfterSameProcessFocusChanges() async {
+        let context = clipboardContext()
+        let replacementElement = AXUIElementCreateApplication(202)
+        let pasteboard = NSPasteboard(name: .init("RefineryTests.\(UUID().uuidString)"))
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString("original", forType: .string))
+        var synthesizeCount = 0
+
+        let outcome = await ClipboardSelectionProbe.read(
+            for: context,
+            pasteboard: pasteboard,
+            accessibilityEnabled: { true },
+            frontmostApplicationPID: { 101 },
+            focusedElementResolver: { _ in .resolved(replacementElement) },
+            synthesizeCopy: { synthesizeCount += 1; return true },
+            wait: { _ in }
+        )
+
+        XCTAssertEqual(outcome, .unreadable)
+        XCTAssertEqual(synthesizeCount, 0)
+        XCTAssertEqual(pasteboard.string(forType: .string), "original")
+    }
+
+    func testCopyProbeRestoresCopyArrivingAfterInitialPollWindow() async {
+        let context = clipboardContext()
+        let pasteboard = NSPasteboard(name: .init("RefineryTests.\(UUID().uuidString)"))
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString("original", forType: .string))
+        var waitCount = 0
+
+        let outcome = await ClipboardSelectionProbe.read(
+            for: context,
+            pasteboard: pasteboard,
+            accessibilityEnabled: { true },
+            frontmostApplicationPID: { 101 },
+            focusedElementResolver: focusedElementResolver(for: context),
+            synthesizeCopy: { true },
+            wait: { _ in
+                waitCount += 1
+                if waitCount == 11 {
+                    _ = pasteboard.clearContents()
+                    XCTAssertTrue(pasteboard.setString("late selection", forType: .string))
+                }
+            }
+        )
+
+        XCTAssertEqual(outcome, .selected("late selection"))
+        XCTAssertEqual(pasteboard.string(forType: .string), "original")
+    }
+
+    func testCopyProbeSupersedesRepeatedAttributedCopyAfterRestoration() async {
+        let context = clipboardContext()
+        let pasteboard = NSPasteboard(name: .init("RefineryTests.\(UUID().uuidString)"))
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString("original", forType: .string))
+        var waitCount = 0
+
+        let outcome = await ClipboardSelectionProbe.read(
+            for: context,
+            pasteboard: pasteboard,
+            accessibilityEnabled: { true },
+            frontmostApplicationPID: { 101 },
+            focusedElementResolver: focusedElementResolver(for: context),
+            synthesizeCopy: { true },
+            wait: { _ in
+                waitCount += 1
+                if waitCount == 1 || waitCount == 2 {
+                    _ = pasteboard.clearContents()
+                    XCTAssertTrue(pasteboard.setString("Sublime selection", forType: .string))
+                }
+            }
+        )
+
+        XCTAssertEqual(outcome, .selected("Sublime selection"))
         XCTAssertEqual(pasteboard.string(forType: .string), "original")
     }
 
     func testCopyProbeReportsRestorationFailureInsteadOfUsingCopiedText() async {
+        let context = clipboardContext()
         let item = NSPasteboardItem()
         item.setString("original", forType: .string)
         let pasteboard = FailingPasteboard(
@@ -1421,10 +1563,11 @@ final class ClipboardSelectionProbeTests: XCTestCase {
         )
 
         let outcome = await ClipboardSelectionProbe.read(
-            for: 101,
+            for: context,
             pasteboard: pasteboard,
             accessibilityEnabled: { true },
             frontmostApplicationPID: { 101 },
+            focusedElementResolver: focusedElementResolver(for: context),
             synthesizeCopy: {
                 _ = pasteboard.clearContents()
                 return pasteboard.setString("Sublime selection", forType: .string)
@@ -1433,6 +1576,22 @@ final class ClipboardSelectionProbeTests: XCTestCase {
         )
 
         XCTAssertEqual(outcome, .clipboardFailure(.restorationFailed))
+    }
+
+    private func clipboardContext(
+        processIdentifier: pid_t = 101,
+        element: AXUIElement = AXUIElementCreateApplication(101)
+    ) -> SelectionReader.ClipboardContext {
+        SelectionReader.ClipboardContext(
+            processIdentifier: processIdentifier,
+            element: element
+        )
+    }
+
+    private func focusedElementResolver(
+        for context: SelectionReader.ClipboardContext
+    ) -> (pid_t) -> SelectionReader.ElementResolution {
+        { _ in .resolved(context.element) }
     }
 }
 
@@ -1644,10 +1803,10 @@ final class SelectionReaderTests: XCTestCase {
             childrenReader: { _ in (.success, []) }
         )
 
-        guard case .clipboardProbe(let processIdentifier) = capture else {
+        guard case .clipboardProbe(let context) = capture else {
             return XCTFail("Expected the AX-hostile clipboard fallback")
         }
-        XCTAssertEqual(processIdentifier, 101)
+        XCTAssertEqual(context.processIdentifier, 101)
     }
 
     func testUnreadableTreeWithAccessibleTextRoleFailsClosed() {
@@ -1678,6 +1837,41 @@ final class SelectionReaderTests: XCTestCase {
 
         guard case .unavailable = capture else {
             return XCTFail("An AX-capable tree must not synthesize Command-C")
+        }
+    }
+
+    func testTextSurfaceElsewhereInApplicationFailsClosed() {
+        let application = AXUIElementCreateApplication(101)
+        let focusedButton = AXUIElementCreateSystemWide()
+        let textArea = AXUIElementCreateApplication(202)
+
+        let capture = SelectionReader.capture(
+            for: 101,
+            elementResolver: { _ in .resolved(focusedButton) },
+            processIdentifierReader: { _ in 101 },
+            attributeReader: { element, attribute in
+                switch attribute as String {
+                case kAXSelectedTextAttribute, kAXSelectedTextRangeAttribute:
+                    return (.attributeUnsupported, nil)
+                case kAXRoleAttribute:
+                    if CFEqual(element, application) {
+                        return (.success, kAXApplicationRole as CFString)
+                    }
+                    return (
+                        .success,
+                        (CFEqual(element, textArea) ? kAXTextAreaRole : kAXButtonRole) as CFString
+                    )
+                default:
+                    return (.attributeUnsupported, nil)
+                }
+            },
+            childrenReader: { element in
+                CFEqual(element, application) ? (.success, [textArea]) : (.success, [])
+            }
+        )
+
+        guard case .unavailable = capture else {
+            return XCTFail("An AX-capable application must not synthesize Command-C")
         }
     }
 

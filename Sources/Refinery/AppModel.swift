@@ -26,7 +26,9 @@ public final class AppModel: ObservableObject {
     private let frontmostApplicationPID: () -> pid_t?
     private let captureSelection: (pid_t) -> SelectionReader.Capture
     private let readSelection: @Sendable (SelectionReader.Context) -> SelectionReader.Outcome
-    private let probeClipboardSelection: @MainActor @Sendable (pid_t) async -> SelectionReader.Outcome
+    private let probeClipboardSelection: @MainActor @Sendable (
+        SelectionReader.ClipboardContext
+    ) async -> SelectionReader.Outcome
     private let readAPIKey: (URL) throws -> String?
     private let polish: @Sendable (URL, String, String, Preset, String?, String) async throws -> String
     private let writeClipboard: (String) -> Result<Void, ClipboardError>
@@ -78,7 +80,9 @@ public final class AppModel: ObservableObject {
         readSelection: @escaping @Sendable (SelectionReader.Context) -> SelectionReader.Outcome = {
             SelectionReader.readSelection(from: $0)
         },
-        probeClipboardSelection: @escaping @MainActor @Sendable (pid_t) async -> SelectionReader.Outcome = {
+        probeClipboardSelection: @escaping @MainActor @Sendable (
+            SelectionReader.ClipboardContext
+        ) async -> SelectionReader.Outcome = {
             await ClipboardSelectionProbe.read(for: $0)
         },
         readAPIKey: @escaping (URL) throws -> String? = { try KeychainStore.readAPIKey(for: $0) },
@@ -253,8 +257,8 @@ public final class AppModel: ObservableObject {
                 selection = await Task.detached(priority: .userInitiated) {
                     readSelection(context)
                 }.value
-            case .clipboardProbe(let processIdentifier):
-                selection = await probeClipboardSelection(processIdentifier)
+            case .clipboardProbe(let context):
+                selection = await probeClipboardSelection(context)
             case .unavailable:
                 selection = .unreadable
             }

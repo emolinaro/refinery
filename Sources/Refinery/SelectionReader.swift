@@ -28,6 +28,11 @@ enum SelectionReader {
         fileprivate let element: AXUIElement
     }
 
+    struct ClipboardContext: @unchecked Sendable {
+        let processIdentifier: pid_t
+        let element: AXUIElement
+    }
+
     enum ElementResolution {
         case resolved(AXUIElement)
         case failed(AXError)
@@ -35,7 +40,7 @@ enum SelectionReader {
 
     enum Capture {
         case accessibility(Context)
-        case clipboardProbe(processIdentifier: pid_t)
+        case clipboardProbe(ClipboardContext)
         case unavailable
     }
 
@@ -65,7 +70,8 @@ enum SelectionReader {
             elementResolver: resolveFocusedElement,
             processIdentifierReader: processIdentifierOfElement,
             attributeReader: copyAttributeValue,
-            childrenReader: copyChildren
+            childrenReader: copyChildren,
+            applicationElement: AXUIElementCreateApplication
         )
     }
 
@@ -74,7 +80,8 @@ enum SelectionReader {
         elementResolver: (pid_t) -> ElementResolution,
         processIdentifierReader: ProcessIdentifierReader,
         attributeReader: AttributeReader,
-        childrenReader: ChildrenReader
+        childrenReader: ChildrenReader,
+        applicationElement: (pid_t) -> AXUIElement = AXUIElementCreateApplication
     ) -> Capture {
         guard case .resolved(let element) = elementResolver(processIdentifier),
               processIdentifierReader(element) == processIdentifier,
@@ -88,12 +95,19 @@ enum SelectionReader {
                 element: element
             ))
         }
+        let application = applicationElement(processIdentifier)
+        guard processIdentifierReader(application) == processIdentifier else {
+            return .unavailable
+        }
         return textCapability(
-            rootedAt: element,
+            rootedAt: application,
             attributeReader: attributeReader,
             childrenReader: childrenReader
         ) == .absent
-            ? .clipboardProbe(processIdentifier: processIdentifier)
+            ? .clipboardProbe(ClipboardContext(
+                processIdentifier: processIdentifier,
+                element: element
+            ))
             : .unavailable
     }
 
@@ -165,7 +179,7 @@ enum SelectionReader {
 
     // MARK: Focused-element resolution
 
-    private static func resolveFocusedElement(for processIdentifier: pid_t) -> ElementResolution {
+    static func resolveFocusedElement(for processIdentifier: pid_t) -> ElementResolution {
         resolveFocusedElement(
             for: processIdentifier,
             applicationElement: AXUIElementCreateApplication,
@@ -325,7 +339,7 @@ enum SelectionReader {
         case unknown
     }
 
-    /// Proves that the focused subtree has no AX-backed text surface. Any
+    /// Proves that the application subtree has no AX-backed text surface. Any
     /// unreadable node or an unexpectedly large tree fails closed so the
     /// clipboard fallback never runs merely because AX had a transient error.
     private static func textCapability(

@@ -17,6 +17,25 @@ extension NSPasteboard: PasteboardAccess {}
 public enum ClipboardStore {
     struct Snapshot {
         fileprivate let items: [NSPasteboardItem]
+
+        func containsString(_ text: String) -> Bool {
+            items.contains { $0.string(forType: .string) == text }
+        }
+
+        fileprivate func makeItems() -> [NSPasteboardItem]? {
+            var copies: [NSPasteboardItem] = []
+            for item in items {
+                let copy = NSPasteboardItem()
+                for type in item.types {
+                    guard let data = item.data(forType: type),
+                          copy.setData(data, forType: type) else {
+                        return nil
+                    }
+                }
+                copies.append(copy)
+            }
+            return copies
+        }
     }
 
     /// Writes the polished text to the clipboard.
@@ -79,8 +98,11 @@ public enum ClipboardStore {
         _ snapshot: Snapshot,
         to pasteboard: any PasteboardAccess
     ) -> Result<Void, ClipboardError> {
+        guard let items = snapshot.makeItems() else {
+            return .failure(.restorationFailed)
+        }
         pasteboard.clearContents()
-        guard pasteboard.writeObjects(snapshot.items) else {
+        guard pasteboard.writeObjects(items) else {
             return .failure(.restorationFailed)
         }
         return .success(())
@@ -89,6 +111,7 @@ public enum ClipboardStore {
 
 enum ClipboardError: LocalizedError, Equatable, Sendable {
     case snapshotFailed
+    case probeFailed
     case writeFailed
     case restorationFailed
 
@@ -96,6 +119,8 @@ enum ClipboardError: LocalizedError, Equatable, Sendable {
         switch self {
         case .snapshotFailed:
             return "Could not safely read the current clipboard, so it was left unchanged."
+        case .probeFailed:
+            return "Could not safely prepare the clipboard to read the selected text."
         case .writeFailed:
             return "Could not write the polished text to the clipboard."
         case .restorationFailed:
