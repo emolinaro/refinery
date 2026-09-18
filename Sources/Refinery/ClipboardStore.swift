@@ -17,9 +17,11 @@ extension NSPasteboard: PasteboardAccess {}
 public enum ClipboardStore {
     struct Snapshot {
         fileprivate let items: [NSPasteboardItem]
+        fileprivate let stringRepresentation: String?
 
         func containsString(_ text: String) -> Bool {
-            items.contains { $0.string(forType: .string) == text }
+            stringRepresentation == text
+                || items.contains { $0.string(forType: .string) == text }
         }
 
         func matches(_ pasteboard: any PasteboardAccess) -> Bool {
@@ -98,7 +100,11 @@ public enum ClipboardStore {
             guard pasteboard.changeCount == writeChangeCount else {
                 return .failure(.clipboardChanged)
             }
-            switch restoreWithChangeCount(capturedSnapshot, to: pasteboard) {
+            switch restoreWithChangeCount(
+                capturedSnapshot,
+                to: pasteboard,
+                ifUnchangedSince: writeChangeCount
+            ) {
             case .success:
                 return .failure(.writeFailed)
             case .failure(let error):
@@ -115,6 +121,7 @@ public enum ClipboardStore {
     static func snapshot(
         of pasteboard: any PasteboardAccess
     ) -> Result<Snapshot, ClipboardError> {
+        let stringRepresentation = pasteboard.string(forType: .string)
         guard let currentItems = pasteboard.pasteboardItems else {
             return .failure(.snapshotFailed)
         }
@@ -127,27 +134,22 @@ public enum ClipboardStore {
             }
             previousItems.append(copy)
         }
-        return .success(Snapshot(items: previousItems))
-    }
-
-    static func restore(
-        _ snapshot: Snapshot,
-        to pasteboard: any PasteboardAccess
-    ) -> Result<Void, ClipboardError> {
-        switch restoreWithChangeCount(snapshot, to: pasteboard) {
-        case .success:
-            return .success(())
-        case .failure(let error):
-            return .failure(error)
-        }
+        return .success(Snapshot(
+            items: previousItems,
+            stringRepresentation: stringRepresentation
+        ))
     }
 
     static func restoreWithChangeCount(
         _ snapshot: Snapshot,
-        to pasteboard: any PasteboardAccess
+        to pasteboard: any PasteboardAccess,
+        ifUnchangedSince expectedChangeCount: Int
     ) -> Result<Int, ClipboardError> {
         guard let items = snapshot.makeItems() else {
             return .failure(.restorationFailed)
+        }
+        guard pasteboard.changeCount == expectedChangeCount else {
+            return .failure(.clipboardChanged)
         }
         let restoredChangeCount = pasteboard.clearContents()
         guard pasteboard.changeCount == restoredChangeCount else {

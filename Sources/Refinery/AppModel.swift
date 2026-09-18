@@ -11,6 +11,7 @@ public final class AppModel: ObservableObject {
     @Published var lastOutcome: Outcome?
     @Published var isRunning = false
     @Published private(set) var settingsAreReadable: Bool
+    @Published private(set) var isFinishingClipboardRestore = false
 
     enum Outcome: Equatable {
         case polished
@@ -27,11 +28,15 @@ public final class AppModel: ObservableObject {
     private let captureSelection: (pid_t) -> SelectionReader.Capture
     private let readSelection: @Sendable (SelectionReader.Context) -> SelectionReader.Outcome
     private let probeClipboardSelection: @MainActor @Sendable (
-        SelectionReader.ClipboardContext
+        SelectionReader.ClipboardContext,
+        ClipboardSelectionProbe.OwnershipHandler
     ) async -> SelectionReader.Outcome
     private let readAPIKey: (URL) throws -> String?
     private let polish: @Sendable (URL, String, String, Preset, String?, String) async throws -> String
     private let writeClipboard: (String, Int?) -> Result<Void, ClipboardError>
+    private let terminateApplication: () -> Void
+    private var isClipboardOwnershipActive = false
+    private var quitRequested = false
 
     private enum APIKeySnapshot: Sendable {
         case available(String)
@@ -81,9 +86,13 @@ public final class AppModel: ObservableObject {
             SelectionReader.readSelection(from: $0)
         },
         probeClipboardSelection: @escaping @MainActor @Sendable (
-            SelectionReader.ClipboardContext
+            SelectionReader.ClipboardContext,
+            ClipboardSelectionProbe.OwnershipHandler
         ) async -> SelectionReader.Outcome = {
-            await ClipboardSelectionProbe.read(for: $0)
+            await ClipboardSelectionProbe.read(
+                for: $0,
+                ownershipChanged: $1
+            )
         },
         readAPIKey: @escaping (URL) throws -> String? = { try KeychainStore.readAPIKey(for: $0) },
         polish: @escaping @Sendable (
@@ -103,6 +112,9 @@ public final class AppModel: ObservableObject {
                 to: NSPasteboard.general,
                 ifUnchangedSince: $1
             )
+        },
+        terminateApplication: @escaping () -> Void = {
+            NSApplication.shared.terminate(nil)
         }
     ) {
         self.settings = settings
@@ -118,6 +130,7 @@ public final class AppModel: ObservableObject {
         self.readAPIKey = readAPIKey
         self.polish = polish
         self.writeClipboard = writeClipboard
+        self.terminateApplication = terminateApplication
         applyHotkey()
     }
 
@@ -174,6 +187,16 @@ public final class AppModel: ObservableObject {
     public func cancelHotkeyRecording() {
         HotkeyRecorder.cancel()
         hotkeyCenter.resume()
+    }
+
+    func requestQuit() {
+        // Force Quit can still interrupt restoration because clipboard contents are never persisted.
+        guard isClipboardOwnershipActive else {
+            terminateApplication()
+            return
+        }
+        quitRequested = true
+        isFinishingClipboardRestore = true
     }
 
     /// Registers a newly recorded hotkey, keeping the previous registration
@@ -262,11 +285,32 @@ public final class AppModel: ObservableObject {
                     readSelection(context)
                 }.value
             case .clipboardProbe(let context):
-                selection = await probeClipboardSelection(context)
+                selection = await probeClipboardSelection(context) { [weak self] event in
+                    self?.handleClipboardOwnership(event)
+                }
             case .unavailable:
                 selection = .unreadable
             }
             self?.handle(selection: selection, configuration: configuration)
+        }
+    }
+
+    private func handleClipboardOwnership(
+        _ event: ClipboardSelectionProbe.OwnershipEvent
+    ) {
+        switch event {
+        case .began:
+            isClipboardOwnershipActive = true
+        case .endedSafely:
+            isClipboardOwnershipActive = false
+            guard quitRequested else { return }
+            quitRequested = false
+            isFinishingClipboardRestore = false
+            terminateApplication()
+        case .restorationFailed:
+            isClipboardOwnershipActive = false
+            quitRequested = false
+            isFinishingClipboardRestore = false
         }
     }
 

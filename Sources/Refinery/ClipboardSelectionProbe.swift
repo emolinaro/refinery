@@ -29,6 +29,14 @@ enum ClipboardSelectionProbe {
         let selectionEvidence: SelectionReader.SelectionEvidence
     }
 
+    enum OwnershipEvent: Equatable, Sendable {
+        case began
+        case endedSafely
+        case restorationFailed
+    }
+
+    typealias OwnershipHandler = @MainActor @Sendable (OwnershipEvent) -> Void
+
     @MainActor
     static func read(
         for context: SelectionReader.ClipboardContext,
@@ -46,6 +54,7 @@ enum ClipboardSelectionProbe {
         ) -> SelectionReader.SelectionEvidence = {
             SelectionReader.selectionEvidence(for: $0)
         },
+        ownershipChanged: OwnershipHandler = { _ in },
         synthesizeCopy: () -> Bool = synthesizeCopyEvent,
         wait: @escaping (UInt64) async -> Void = { nanoseconds in
             try? await Task.sleep(nanoseconds: nanoseconds)
@@ -103,6 +112,16 @@ enum ClipboardSelectionProbe {
         guard currentEligibility.selectionEvidence == .present else {
             return .clipboardFailure(.selectionUnverified)
         }
+        let immediateSelectionEvidence = await selectionEvidence(
+            for: context,
+            reader: selectionEvidenceReader
+        )
+        guard pasteboard.changeCount == preSnapshotChangeCount else {
+            return .clipboardFailure(.clipboardChanged)
+        }
+        guard immediateSelectionEvidence == .present else {
+            return .clipboardFailure(.selectionUnverified)
+        }
         guard capturedFocusRemainsCurrent(
             context,
             accessibilityEnabled: accessibilityEnabled,
@@ -124,49 +143,55 @@ enum ClipboardSelectionProbe {
             return .clipboardFailure(error)
         }
 
-        let immediateSelectionEvidence = await selectionEvidence(
-            for: context,
-            reader: selectionEvidenceReader
-        )
-        guard pasteboard.changeCount == ownership.changeCount,
-              owns(pasteboard, token: ownership.token) else {
-            return .clipboardFailure(.clipboardChanged)
+        ownershipChanged(.began)
+        var ownershipFinished = false
+        func finishOwnership(_ event: OwnershipEvent) {
+            guard !ownershipFinished else { return }
+            ownershipFinished = true
+            ownershipChanged(event)
         }
-        guard capturedFocusRemainsCurrent(
-            context,
-            accessibilityEnabled: accessibilityEnabled,
-            frontmostApplicationPID: frontmostApplicationPID,
-            focusedElementResolver: focusedElementResolver
-        ) else {
-            return restore(
-                snapshot,
-                to: pasteboard,
-                ifUnchangedSince: ownership.changeCount,
-                then: .unreadable
+        func finishOwnership(after error: ClipboardError) {
+            finishOwnership(
+                error == .restorationFailed ? .restorationFailed : .endedSafely
             )
         }
-        guard immediateSelectionEvidence == .present else {
-            return restore(
+        func restoreAndFinish(
+            ifUnchangedSince expectedChangeCount: Int,
+            then outcome: SelectionReader.Outcome
+        ) -> SelectionReader.Outcome {
+            switch restoreSnapshot(
                 snapshot,
                 to: pasteboard,
-                ifUnchangedSince: ownership.changeCount,
-                then: .clipboardFailure(.selectionUnverified)
-            )
+                ifUnchangedSince: expectedChangeCount
+            ) {
+            case .success:
+                finishOwnership(.endedSafely)
+                return outcome
+            case .failure(let error):
+                finishOwnership(after: error)
+                return .clipboardFailure(error)
+            }
         }
+        defer {
+            if !ownershipFinished {
+                ownershipChanged(.restorationFailed)
+            }
+        }
+
         guard pasteboard.changeCount == ownership.changeCount,
               owns(pasteboard, token: ownership.token) else {
+            finishOwnership(.endedSafely)
             return .clipboardFailure(.clipboardChanged)
         }
         guard synthesizeCopy() else {
-            return restore(
-                snapshot,
-                to: pasteboard,
+            return restoreAndFinish(
                 ifUnchangedSince: ownership.changeCount,
                 then: .unreadable
             )
         }
         guard pasteboard.changeCount == ownership.changeCount,
               owns(pasteboard, token: ownership.token) else {
+            finishOwnership(.endedSafely)
             return .clipboardFailure(.clipboardChanged)
         }
 
@@ -175,18 +200,6 @@ enum ClipboardSelectionProbe {
 
         for _ in 0..<pollAttempts {
             await wait(pollIntervalNanoseconds)
-            guard capturedFocusRemainsCurrent(
-                context,
-                accessibilityEnabled: accessibilityEnabled,
-                frontmostApplicationPID: frontmostApplicationPID,
-                focusedElementResolver: focusedElementResolver
-            ) else {
-                guard pasteboard.changeCount == ownership.changeCount else {
-                    return .clipboardFailure(.clipboardChanged)
-                }
-                outcome = .unreadable
-                break
-            }
             guard pasteboard.changeCount != ownership.changeCount else {
                 continue
             }
@@ -194,29 +207,13 @@ enum ClipboardSelectionProbe {
                 of: pasteboard,
                 excluding: ownership.token
             ) else {
+                finishOwnership(.endedSafely)
                 return .clipboardFailure(.clipboardChanged)
             }
             expectedRestoreChangeCount = observation.changeCount
-            let observedSelectionEvidence = await selectionEvidence(
-                for: context,
-                reader: selectionEvidenceReader
-            )
-            guard pasteboard.changeCount == observation.changeCount,
-                  capturedFocusRemainsCurrent(
-                      context,
-                      accessibilityEnabled: accessibilityEnabled,
-                      frontmostApplicationPID: frontmostApplicationPID,
-                      focusedElementResolver: focusedElementResolver
-                  ) else {
+            guard pasteboard.changeCount == observation.changeCount else {
+                finishOwnership(.endedSafely)
                 return .clipboardFailure(.clipboardChanged)
-            }
-            guard observedSelectionEvidence == .present else {
-                return restore(
-                    snapshot,
-                    to: pasteboard,
-                    ifUnchangedSince: observation.changeCount,
-                    then: .clipboardFailure(.selectionUnverified)
-                )
             }
             guard let text = observation.text, !snapshot.containsString(text) else {
                 outcome = .noSelection
@@ -235,8 +232,31 @@ enum ClipboardSelectionProbe {
         ) {
         case .success(let changeCount):
             restoredChangeCount = changeCount
+            finishOwnership(.endedSafely)
         case .failure(let error):
+            finishOwnership(after: error)
             return .clipboardFailure(error)
+        }
+
+        if case .selected = outcome {
+            let observedSelectionEvidence = await selectionEvidence(
+                for: context,
+                reader: selectionEvidenceReader
+            )
+            guard pasteboard.changeCount == restoredChangeCount else {
+                return .clipboardFailure(.clipboardChanged)
+            }
+            guard capturedFocusRemainsCurrent(
+                context,
+                accessibilityEnabled: accessibilityEnabled,
+                frontmostApplicationPID: frontmostApplicationPID,
+                focusedElementResolver: focusedElementResolver
+            ) else {
+                return .unreadable
+            }
+            guard observedSelectionEvidence == .present else {
+                return .clipboardFailure(.selectionUnverified)
+            }
         }
 
         return await monitorLateEvents(
@@ -392,34 +412,16 @@ enum ClipboardSelectionProbe {
         to pasteboard: any PasteboardAccess,
         ifUnchangedSince expectedChangeCount: Int
     ) -> Result<Int, ClipboardError> {
-        guard pasteboard.changeCount == expectedChangeCount else {
-            return .failure(.clipboardChanged)
-        }
         // NSPasteboard has no atomic compare-and-restore, so a write can still land after this check.
-        switch ClipboardStore.restoreWithChangeCount(snapshot, to: pasteboard) {
-        case .success(let changeCount):
-            return .success(changeCount)
-        case .failure(let error):
-            return .failure(error)
-        }
-    }
-
-    @MainActor
-    private static func restore(
-        _ snapshot: ClipboardStore.Snapshot,
-        to pasteboard: any PasteboardAccess,
-        ifUnchangedSince expectedChangeCount: Int,
-        then outcome: SelectionReader.Outcome
-    ) -> SelectionReader.Outcome {
-        switch restoreSnapshot(
+        switch ClipboardStore.restoreWithChangeCount(
             snapshot,
             to: pasteboard,
             ifUnchangedSince: expectedChangeCount
         ) {
-        case .success:
-            return outcome
+        case .success(let changeCount):
+            return .success(changeCount)
         case .failure(let error):
-            return .clipboardFailure(error)
+            return .failure(error)
         }
     }
 

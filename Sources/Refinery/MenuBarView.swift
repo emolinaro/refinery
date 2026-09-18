@@ -9,17 +9,21 @@ public struct MenuBarView: View {
 
     @ViewBuilder
     private var statusLine: some View {
-        switch model.lastOutcome {
-        case nil:
-            Text("Ready")
-        case .polished:
-            Text("Polished - result is on the clipboard")
-        case .emptySelection:
-            Text("No text selected")
-        case .hotkeyRegistrationFailure:
-            Text("Could not register hotkey; it may be in use by another app.")
-        case .failure(let message):
-            Text(message)
+        if model.isFinishingClipboardRestore {
+            Text("Finishing clipboard restoration before quitting…")
+        } else {
+            switch model.lastOutcome {
+            case nil:
+                Text("Ready")
+            case .polished:
+                Text("Polished - result is on the clipboard")
+            case .emptySelection:
+                Text("No text selected")
+            case .hotkeyRegistrationFailure:
+                Text("Could not register hotkey; it may be in use by another app.")
+            case .failure(let message):
+                Text(message)
+            }
         }
     }
 
@@ -66,7 +70,7 @@ public struct MenuBarView: View {
             Divider()
 
             Button("Quit Refinery") {
-                NSApplication.shared.terminate(nil)
+                model.requestQuit()
             }
         }
         .frame(minWidth: 260)
