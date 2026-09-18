@@ -43,8 +43,7 @@ enum SelectionReader {
             for: processIdentifier,
             elementResolver: resolveFocusedElement,
             processIdentifierReader: processIdentifierOfElement,
-            attributeReader: copyAttributeValue,
-            sleep: { Thread.sleep(forTimeInterval: $0) }
+            attributeReader: copyAttributeValue
         )
     }
 
@@ -52,36 +51,19 @@ enum SelectionReader {
         for processIdentifier: pid_t,
         elementResolver: (pid_t) -> ElementResolution,
         processIdentifierReader: ProcessIdentifierReader,
-        attributeReader: AttributeReader,
-        sleep: (TimeInterval) -> Void
+        attributeReader: AttributeReader
     ) -> Context? {
-        var capturedElement: AXUIElement?
-        for attempt in 1...settleAttempts {
-            switch elementResolver(processIdentifier) {
-            case .resolved(let element):
-                guard processIdentifierReader(element) == processIdentifier else {
-                    return nil
-                }
-                if let capturedElement, !CFEqual(capturedElement, element) {
-                    return nil
-                }
-                capturedElement = element
-                if let selection = attemptRead(from: element, attributeReader: attributeReader) {
-                    guard selection != .unreadable else { return nil }
-                    return Context(
-                        processIdentifier: processIdentifier,
-                        selection: selection,
-                        element: element
-                    )
-                }
-            case .failed(let error):
-                guard isRetriable(error) else { return nil }
-            }
-            if attempt < settleAttempts {
-                sleep(settleInterval)
-            }
+        guard case .resolved(let element) = elementResolver(processIdentifier),
+              processIdentifierReader(element) == processIdentifier,
+              let selection = attemptRead(from: element, attributeReader: attributeReader),
+              selection != .unreadable else {
+            return nil
         }
-        return nil
+        return Context(
+            processIdentifier: processIdentifier,
+            selection: selection,
+            element: element
+        )
     }
 
     static func readSelection(from context: Context) -> Outcome {
