@@ -135,14 +135,34 @@ public final class AppModel: ObservableObject {
             return
         }
 
-        guard SelectionReader.isAccessibilityEnabled() else {
+        let selection: SelectionReader.Outcome
+        if SelectionReader.isAccessibilityEnabled() {
+            selection = SelectionReader.readSelection()
+        } else {
             lastOutcome = .failure("Accessibility permission is required to read the selected text.")
             SelectionReader.promptForAccessibility()
             return
         }
 
-        guard let selected = SelectionReader.readSelectedText(),
-              !selected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        let selected: String
+        switch selection {
+        case .selected(let text):
+            selected = text
+        case .noSelection:
+            lastOutcome = .emptySelection
+            return
+        case .unreadable:
+            // A failed accessibility query is not "no text selected": report
+            // it so the difference between a missing selection and an app
+            // that would not answer stays visible. The detailed reason is
+            // kept out of the user-facing line by design.
+            lastOutcome = .failure(
+                "Could not read the selection from the frontmost app. Try again in a moment."
+            )
+            return
+        }
+
+        guard !selected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             lastOutcome = .emptySelection
             return
         }

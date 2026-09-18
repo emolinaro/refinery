@@ -1189,3 +1189,60 @@ private final class StubHotkeyManager: HotkeyManaging {
         isTriggerSuppressed = false
     }
 }
+
+/// SelectionReader unit tests.
+///
+/// The AXUIElement entry points cannot be faked (C functions), so these
+/// tests cover the pure outcome-mapping logic that the reader builds on:
+/// the retriability classification of AX errors and the slice helper.
+final class SelectionReaderTests: XCTestCase {
+    func testSliceExtractsSelectedRange() {
+        let outcome: SelectionReader.Outcome = .selected("brave")
+        XCTAssertEqual(
+            SelectionReader.slice("hello brave new world", CFRange(location: 6, length: 5)),
+            outcome
+        )
+    }
+
+    func testRetriableErrorsCoverTransientFailures() {
+        // cannotComplete / failure / apiDisabled are transient or fatal-but-unknown:
+        // retrying them briefly is what fixes the hotkey-time race.
+        XCTAssertTrue(SelectionReader.isRetriable(.cannotComplete))
+        XCTAssertTrue(SelectionReader.isRetriable(.failure))
+        XCTAssertTrue(SelectionReader.isRetriable(.apiDisabled))
+
+        // attributeUnsupported and noValue are definitive answers, not races:
+        // the element simply has no selection to offer.
+        XCTAssertFalse(SelectionReader.isRetriable(.attributeUnsupported))
+        XCTAssertFalse(SelectionReader.isRetriable(.noValue))
+        XCTAssertFalse(SelectionReader.isRetriable(.invalidUIElement))
+        XCTAssertFalse(SelectionReader.isRetriable(.success))
+    }
+
+    func testSliceEmptyRangeReportsNoSelection() {
+        let outcome: SelectionReader.Outcome = .noSelection
+        XCTAssertEqual(
+            SelectionReader.slice("hello", CFRange(location: 0, length: 0)),
+            outcome
+        )
+    }
+
+    func testSliceOutOfRangeRangeReportsNoSelection() {
+        let outcome: SelectionReader.Outcome = .noSelection
+        XCTAssertEqual(
+            SelectionReader.slice("hello", CFRange(location: 3, length: 100)),
+            outcome
+        )
+    }
+}
+
+extension SelectionReader.Outcome: Equatable {
+    public static func == (lhs: SelectionReader.Outcome, rhs: SelectionReader.Outcome) -> Bool {
+        switch (lhs, rhs) {
+        case (.selected(let a), .selected(let b)): return a == b
+        case (.noSelection, .noSelection): return true
+        case (.unreadable, .unreadable): return true
+        default: return false
+        }
+    }
+}
