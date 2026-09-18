@@ -4,6 +4,9 @@ import ApplicationServices
 /// Reads the current text selection from the frontmost app via the
 /// Accessibility API (AXUIElement).
 enum SelectionReader {
+    typealias AttributeReader = (AXUIElement, CFString) -> (AXError, CFTypeRef?)
+    typealias ProcessIdentifierReader = (AXUIElement) -> pid_t?
+
     /// The result of reading the current selection.
     enum Outcome: Equatable, Sendable {
         /// Non-empty selected text read from the focused element.
@@ -20,38 +23,28 @@ enum SelectionReader {
     private static let settleAttempts = 3
     private static let settleInterval: TimeInterval = 0.08
 
-    /// Reads the selected text of the element that would receive keystrokes.
-    ///
-    /// The focused element is resolved by asking the frontmost application
-    /// directly (`NSWorkspace` pid -> `AXUIElementCreateApplication`), with
-    /// the system-wide focused element as fallback: resolving through the
-    /// system-wide element can fail with `cannotComplete` while the event
-    /// loop settles, while the pid-addressed query answers in every
-    /// context.
-    static func readSelection() -> Outcome {
-        guard let element = resolveFocusedElement() else {
-            return .unreadable
-        }
-        return readSelection(from: element)
+    static func frontmostApplicationPID() -> pid_t? {
+        NSWorkspace.shared.frontmostApplication?.processIdentifier
     }
 
-    /// Reads the selection of a resolved element, retrying transient
-    /// failures a few times so a busy frontmost app can settle.
-    static func readSelection(from element: AXUIElement) -> Outcome {
+    static func readSelection(for processIdentifier: pid_t) -> Outcome {
         readSelection(
-            from: element,
+            for: processIdentifier,
+            elementResolver: resolveFocusedElement,
             attributeReader: copyAttributeValue,
             sleep: { Thread.sleep(forTimeInterval: $0) }
         )
     }
 
     static func readSelection(
-        from element: AXUIElement,
-        attributeReader: (AXUIElement, CFString) -> (AXError, CFTypeRef?),
+        for processIdentifier: pid_t,
+        elementResolver: (pid_t) -> AXUIElement?,
+        attributeReader: AttributeReader,
         sleep: (TimeInterval) -> Void
     ) -> Outcome {
         for attempt in 1...settleAttempts {
-            if let outcome = attemptRead(from: element, attributeReader: attributeReader) {
+            if let element = elementResolver(processIdentifier),
+               let outcome = attemptRead(from: element, attributeReader: attributeReader) {
                 return outcome
             }
             if attempt < settleAttempts {
@@ -76,36 +69,59 @@ enum SelectionReader {
 
     // MARK: Focused-element resolution
 
-    private static func resolveFocusedElement() -> AXUIElement? {
-        if let frontmost = NSWorkspace.shared.frontmostApplication {
-            let application = AXUIElementCreateApplication(frontmost.processIdentifier)
-            if let element = focusedElement(of: application) {
-                return element
-            }
-        }
-        let systemWide = AXUIElementCreateSystemWide()
-        return focusedElement(of: systemWide)
+    private static func resolveFocusedElement(for processIdentifier: pid_t) -> AXUIElement? {
+        resolveFocusedElement(
+            for: processIdentifier,
+            applicationElement: AXUIElementCreateApplication,
+            systemWideElement: AXUIElementCreateSystemWide,
+            attributeReader: copyAttributeValue,
+            processIdentifierReader: processIdentifierOfElement
+        )
     }
 
-    /// Queries the focused element of `owner`, retrying transient failures.
-    private static func focusedElement(of owner: AXUIElement) -> AXUIElement? {
-        for attempt in 1...settleAttempts {
-            var focused: CFTypeRef?
-            let result = AXUIElementCopyAttributeValue(
-                owner,
-                kAXFocusedUIElementAttribute as CFString,
-                &focused
-            )
-            if result == .success, let focused,
-               CFGetTypeID(focused) == AXUIElementGetTypeID() {
-                return (focused as! AXUIElement)
-            }
-            if !isRetriable(result) { return nil }
-            if attempt < settleAttempts {
-                Thread.sleep(forTimeInterval: settleInterval)
-            }
+    static func resolveFocusedElement(
+        for processIdentifier: pid_t,
+        applicationElement: (pid_t) -> AXUIElement,
+        systemWideElement: () -> AXUIElement,
+        attributeReader: AttributeReader,
+        processIdentifierReader: ProcessIdentifierReader
+    ) -> AXUIElement? {
+        let application = applicationElement(processIdentifier)
+        if let element = focusedElement(
+            of: application,
+            expectedProcessIdentifier: processIdentifier,
+            attributeReader: attributeReader,
+            processIdentifierReader: processIdentifierReader
+        ) {
+            return element
         }
-        return nil
+        return focusedElement(
+            of: systemWideElement(),
+            expectedProcessIdentifier: processIdentifier,
+            attributeReader: attributeReader,
+            processIdentifierReader: processIdentifierReader
+        )
+    }
+
+    private static func focusedElement(
+        of owner: AXUIElement,
+        expectedProcessIdentifier: pid_t,
+        attributeReader: AttributeReader,
+        processIdentifierReader: ProcessIdentifierReader
+    ) -> AXUIElement? {
+        let (result, focused) = attributeReader(
+            owner,
+            kAXFocusedUIElementAttribute as CFString
+        )
+        guard result == .success, let focused,
+              CFGetTypeID(focused) == AXUIElementGetTypeID() else {
+            return nil
+        }
+        let element = focused as! AXUIElement
+        guard processIdentifierReader(element) == expectedProcessIdentifier else {
+            return nil
+        }
+        return element
     }
 
     // MARK: Selection reads
@@ -113,35 +129,46 @@ enum SelectionReader {
     /// One read attempt. Returns nil when a transient failure should be retried.
     private static func attemptRead(
         from element: AXUIElement,
-        attributeReader: (AXUIElement, CFString) -> (AXError, CFTypeRef?)
+        attributeReader: AttributeReader
     ) -> Outcome? {
         let (selectedResult, selected) = attributeReader(
             element,
             kAXSelectedTextAttribute as CFString
         )
         if selectedResult == .success {
-            let text = (selected as? String) ?? ""
-            return text.isEmpty ? .noSelection : .selected(text)
+            if let text = selected as? String {
+                return text.isEmpty ? .noSelection : .selected(text)
+            }
+            if let attributed = selected as? NSAttributedString {
+                return attributed.string.isEmpty ? .noSelection : .selected(attributed.string)
+            }
+            return .unreadable
         }
-        guard isRetriable(selectedResult) else {
+        if selectedResult == .attributeUnsupported || selectedResult == .noValue {
             return selectionFromRange(of: element, attributeReader: attributeReader)
         }
-        return nil
+        return isRetriable(selectedResult) ? nil : .unreadable
     }
 
     /// Fallback path: the selected text range applied to the element's full value.
     private static func selectionFromRange(
         of element: AXUIElement,
-        attributeReader: (AXUIElement, CFString) -> (AXError, CFTypeRef?)
+        attributeReader: AttributeReader
     ) -> Outcome? {
         let (rangeResult, rangeValue) = attributeReader(
             element,
             kAXSelectedTextRangeAttribute as CFString
         )
         guard rangeResult == .success else {
-            return isRetriable(rangeResult) ? nil : .noSelection
+            return isRetriable(rangeResult) ? nil : .unreadable
         }
         guard let selectedRange = range(from: rangeValue) else {
+            return .unreadable
+        }
+        guard selectedRange.location >= 0, selectedRange.length >= 0 else {
+            return .unreadable
+        }
+        guard selectedRange.length > 0 else {
             return .noSelection
         }
         let (valueResult, value) = attributeReader(
@@ -149,11 +176,10 @@ enum SelectionReader {
             kAXValueAttribute as CFString
         )
         guard valueResult == .success else {
-            return isRetriable(valueResult) ? nil : .noSelection
+            return isRetriable(valueResult) ? nil : .unreadable
         }
-        guard let value,
-              AXUIElementGetTypeID() != CFGetTypeID(value) else {
-            return .noSelection
+        guard let value else {
+            return .unreadable
         }
         if let text = value as? String {
             return slice(text, selectedRange)
@@ -161,13 +187,19 @@ enum SelectionReader {
         if let attributed = value as? NSAttributedString {
             return slice(attributed.string, selectedRange)
         }
-        return .noSelection
+        return .unreadable
     }
 
     static func slice(_ text: String, _ range: CFRange) -> Outcome {
+        guard range.location >= 0, range.length >= 0 else {
+            return .unreadable
+        }
+        guard range.length > 0 else {
+            return .noSelection
+        }
         let nsRange = NSRange(location: range.location, length: range.length)
         guard let fastRange = Range(nsRange, in: text) else {
-            return .noSelection
+            return .unreadable
         }
         let selected = String(text[fastRange])
         return selected.isEmpty ? .noSelection : .selected(selected)
@@ -175,7 +207,7 @@ enum SelectionReader {
 
     static func isRetriable(_ error: AXError) -> Bool {
         switch error {
-        case .attributeUnsupported, .noValue, .invalidUIElement, .success:
+        case .attributeUnsupported, .noValue, .success:
             return false
         default:
             return true
@@ -189,6 +221,14 @@ enum SelectionReader {
         var value: CFTypeRef?
         let result = AXUIElementCopyAttributeValue(element, attribute, &value)
         return (result, value)
+    }
+
+    private static func processIdentifierOfElement(_ element: AXUIElement) -> pid_t? {
+        var processIdentifier: pid_t = 0
+        guard AXUIElementGetPid(element, &processIdentifier) == .success else {
+            return nil
+        }
+        return processIdentifier
     }
 
     private static func range(from value: CFTypeRef?) -> CFRange? {
