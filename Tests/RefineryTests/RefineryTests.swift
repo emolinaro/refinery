@@ -62,7 +62,7 @@ final class PresetPromptBuilderTests: XCTestCase {
 
 @MainActor
 final class HotkeyCenterTests: XCTestCase {
-    func testSuppressedEventStaysSuppressedAfterResume() async {
+    func testSuppressedEventDoesNotTrigger() {
         let center = HotkeyCenter()
         var triggerCount = 0
         center.onTrigger = { triggerCount += 1 }
@@ -70,18 +70,16 @@ final class HotkeyCenterTests: XCTestCase {
 
         center.handleMatchedHotkeyEvent()
         center.resume()
-        await drainMainQueue()
 
         XCTAssertEqual(triggerCount, 0)
     }
 
-    func testUnsuppressedEventDispatchesTrigger() async {
+    func testUnsuppressedEventTriggersBeforeHandlerReturns() {
         let center = HotkeyCenter()
         var triggerCount = 0
         center.onTrigger = { triggerCount += 1 }
 
         center.handleMatchedHotkeyEvent()
-        await drainMainQueue()
 
         XCTAssertEqual(triggerCount, 1)
     }
@@ -98,14 +96,6 @@ final class HotkeyCenterTests: XCTestCase {
             modifiers: UInt32(cmdKey | optionKey)
         ))
         XCTAssertEqual(receivedOptions, OptionBits(kEventHotKeyExclusive))
-    }
-
-    private func drainMainQueue() async {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.main.async {
-                continuation.resume()
-            }
-        }
     }
 }
 
@@ -804,6 +794,15 @@ final class RecordingSessionTests: XCTestCase {
         XCTAssertNil(HotkeyRecorder.currentSession)
     }
 
+    func testExplicitCancellationEndsSessionAndClearsCurrentSession() {
+        let (_, box) = makeSession()
+
+        HotkeyRecorder.cancel()
+
+        XCTAssertEqual(box.value?.2, "Cancelled.")
+        XCTAssertNil(HotkeyRecorder.currentSession)
+    }
+
     func testInvalidatedSessionDeliversNoCompletion() {
         let (session, box) = makeSession()
         session.invalidate()
@@ -905,6 +904,178 @@ final class AppModelHotkeyTests: XCTestCase {
         XCTAssertTrue(model.adoptHotkey(keyCode: kVK_ANSI_J, modifiers: cmdKey | optionKey))
 
         XCTAssertEqual(model.lastOutcome, .failure("Endpoint failure"))
+    }
+
+    func testClosingSettingsCancelsRecordingAndResumesHotkey() {
+        let hotkeys = StubHotkeyManager(registrationResults: [true])
+        let model = AppModel(
+            settings: AppSettings(baseURL: "https://api.example.com/v1", model: "test-model"),
+            hotkeyCenter: hotkeys
+        )
+        let cancellation = Box<(UInt32?, UInt32?, String)?>(nil)
+        HotkeyRecorder.currentSession = RecordingSession { keyCode, modifiers, reason in
+            cancellation.value = (keyCode, modifiers, reason)
+        }
+        model.suspendHotkey()
+
+        model.cancelHotkeyRecording()
+
+        XCTAssertEqual(cancellation.value?.2, "Cancelled.")
+        XCTAssertNil(HotkeyRecorder.currentSession)
+        XCTAssertFalse(hotkeys.isTriggerSuppressed)
+    }
+
+    func testSelectionValidationDoesNotBlockMainActor() async throws {
+        _ = NSApplication.shared
+        let readStarted = expectation(description: "selection read started")
+        let releaseRead = DispatchSemaphore(value: 0)
+        let selectionContext = makeSelectionContext(processIdentifier: 101)
+        let model = AppModel(
+            settings: AppSettings(baseURL: "https://api.example.com/v1", model: "test-model"),
+            hotkeyCenter: StubHotkeyManager(registrationResults: [true]),
+            accessibilityEnabled: { true },
+            frontmostApplicationPID: { 101 },
+            captureSelectionContext: { _ in selectionContext },
+            readSelection: { _ in
+                readStarted.fulfill()
+                return releaseRead.wait(timeout: .now() + 1) == .success
+                    ? .noSelection
+                    : .unreadable
+            }
+        )
+
+        let startedAt = Date()
+        model.handleHotkey()
+
+        XCTAssertLessThan(Date().timeIntervalSince(startedAt), 0.25)
+        await fulfillment(of: [readStarted], timeout: 1)
+        XCTAssertTrue(model.isRunning)
+        releaseRead.signal()
+
+        for _ in 0..<100 where model.isRunning {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertFalse(model.isRunning)
+        XCTAssertEqual(model.lastOutcome, .emptySelection)
+    }
+
+    func testSelectionReadUsesContextCapturedAtHotkeyInvocation() async throws {
+        _ = NSApplication.shared
+        let readFinished = expectation(description: "selection read finished")
+        let capturedProcessIdentifier = LockedBox<pid_t?>(nil)
+        var frontmostProcessIdentifier: pid_t = 101
+        let selectionContext = makeSelectionContext(processIdentifier: 101)
+        let model = AppModel(
+            settings: AppSettings(baseURL: "https://api.example.com/v1", model: "test-model"),
+            hotkeyCenter: StubHotkeyManager(registrationResults: [true]),
+            accessibilityEnabled: { true },
+            frontmostApplicationPID: { frontmostProcessIdentifier },
+            captureSelectionContext: { _ in selectionContext },
+            readSelection: { context in
+                capturedProcessIdentifier.set(context.processIdentifier)
+                readFinished.fulfill()
+                return .noSelection
+            }
+        )
+
+        model.handleHotkey()
+        frontmostProcessIdentifier = 202
+
+        await fulfillment(of: [readFinished], timeout: 1)
+        for _ in 0..<100 where model.isRunning {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(capturedProcessIdentifier.get(), 101)
+        XCTAssertEqual(model.lastOutcome, .emptySelection)
+    }
+
+    func testRequestUsesConfigurationCapturedAtHotkeyInvocation() async throws {
+        _ = NSApplication.shared
+        let readStarted = expectation(description: "selection read started")
+        let releaseRead = DispatchSemaphore(value: 0)
+        let capturedRequest = LockedBox<CapturedPolishRequest?>(nil)
+        let capturedClipboard = LockedBox<String?>(nil)
+        let selectionContext = makeSelectionContext(processIdentifier: 101)
+        var currentAPIKey = "original-key"
+        let model = AppModel(
+            settings: AppSettings(
+                baseURL: "https://original.example.com/v1",
+                model: "original-model",
+                preset: .formal
+            ),
+            hotkeyCenter: StubHotkeyManager(registrationResults: [true]),
+            persistSettings: { _ in },
+            accessibilityEnabled: { true },
+            frontmostApplicationPID: { 101 },
+            captureSelectionContext: { _ in selectionContext },
+            readSelection: { _ in
+                readStarted.fulfill()
+                return releaseRead.wait(timeout: .now() + 1) == .success
+                    ? .selected("selected text")
+                    : .unreadable
+            },
+            readAPIKey: { _ in currentAPIKey },
+            polish: { baseURL, model, text, preset, custom, key in
+                capturedRequest.set(CapturedPolishRequest(
+                    baseURL: baseURL,
+                    model: model,
+                    text: text,
+                    preset: preset,
+                    customPrompt: custom,
+                    apiKey: key
+                ))
+                return "polished text"
+            },
+            writeClipboard: {
+                capturedClipboard.set($0)
+                return .success(())
+            }
+        )
+
+        model.handleHotkey()
+        await fulfillment(of: [readStarted], timeout: 1)
+        model.settings.baseURL = "https://changed.example.com/v1"
+        model.settings.model = "changed-model"
+        model.settings.preset = .concise
+        currentAPIKey = "changed-key"
+        releaseRead.signal()
+
+        for _ in 0..<100 where model.isRunning {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(capturedRequest.get(), CapturedPolishRequest(
+            baseURL: URL(string: "https://original.example.com/v1")!,
+            model: "original-model",
+            text: "selected text",
+            preset: .formal,
+            customPrompt: nil,
+            apiKey: "original-key"
+        ))
+        XCTAssertEqual(capturedClipboard.get(), "polished text")
+        XCTAssertEqual(model.lastOutcome, .polished)
+    }
+
+    func testSelectionOutcomePrecedesCapturedCredentialFailure() async throws {
+        _ = NSApplication.shared
+        let selectionContext = makeSelectionContext(processIdentifier: 101)
+        let model = AppModel(
+            settings: AppSettings(baseURL: "https://api.example.com/v1", model: "test-model"),
+            hotkeyCenter: StubHotkeyManager(registrationResults: [true]),
+            accessibilityEnabled: { true },
+            frontmostApplicationPID: { 101 },
+            captureSelectionContext: { _ in selectionContext },
+            readSelection: { _ in .noSelection },
+            readAPIKey: { _ in
+                throw NSError(domain: "CredentialFailure", code: 1)
+            }
+        )
+
+        model.handleHotkey()
+
+        for _ in 0..<100 where model.isRunning {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(model.lastOutcome, .emptySelection)
     }
 
     func testUnreadableSettingsAreNotPersistedByUnrelatedUpdates() {
@@ -1119,6 +1290,50 @@ private final class Box<T> {
     init(_ value: T) { self.value = value }
 }
 
+private final class LockedBox<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: T
+
+    init(_ value: T) {
+        self.value = value
+    }
+
+    func get() -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func set(_ value: T) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.value = value
+    }
+}
+
+private struct CapturedPolishRequest: Equatable {
+    let baseURL: URL
+    let model: String
+    let text: String
+    let preset: Preset
+    let customPrompt: String?
+    let apiKey: String
+}
+
+private func makeSelectionContext(processIdentifier: pid_t) -> SelectionReader.Context {
+    let element = AXUIElementCreateApplication(processIdentifier)
+    return SelectionReader.captureContext(
+        for: processIdentifier,
+        elementResolver: { _ in .resolved(element) },
+        processIdentifierReader: { _ in processIdentifier },
+        attributeReader: { _, attribute in
+            attribute as String == kAXSelectedTextAttribute
+                ? (.success, "" as CFString)
+                : (.attributeUnsupported, nil)
+        }
+    )!
+}
+
 private extension Result {
     var failure: Failure? {
         guard case .failure(let error) = self else { return nil }
@@ -1187,5 +1402,474 @@ private final class StubHotkeyManager: HotkeyManaging {
 
     func resume() {
         isTriggerSuppressed = false
+    }
+}
+
+final class SelectionReaderTests: XCTestCase {
+    func testSliceExtractsSelectedRange() {
+        let outcome: SelectionReader.Outcome = .selected("brave")
+        XCTAssertEqual(
+            SelectionReader.slice("hello brave new world", CFRange(location: 6, length: 5)),
+            outcome
+        )
+    }
+
+    func testOnlyTransientContextErrorsAreRetried() {
+        XCTAssertTrue(SelectionReader.isRetriable(.cannotComplete))
+        XCTAssertTrue(SelectionReader.isRetriable(.invalidUIElement))
+        XCTAssertFalse(SelectionReader.isRetriable(.failure))
+        XCTAssertFalse(SelectionReader.isRetriable(.apiDisabled))
+        XCTAssertFalse(SelectionReader.isRetriable(.attributeUnsupported))
+        XCTAssertFalse(SelectionReader.isRetriable(.noValue))
+        XCTAssertFalse(SelectionReader.isRetriable(.success))
+    }
+
+    func testSliceEmptyRangeReportsNoSelection() {
+        let outcome: SelectionReader.Outcome = .noSelection
+        XCTAssertEqual(
+            SelectionReader.slice("hello", CFRange(location: 0, length: 0)),
+            outcome
+        )
+    }
+
+    func testSliceOutOfRangeRangeReportsUnreadable() {
+        let outcome: SelectionReader.Outcome = .unreadable
+        XCTAssertEqual(
+            SelectionReader.slice("hello", CFRange(location: 3, length: 100)),
+            outcome
+        )
+    }
+
+    func testTransientSelectedRangeFailureRetriesFallback() {
+        var range = CFRange(location: 6, length: 5)
+        let rangeValue = AXValueCreate(.cfRange, &range)!
+        var rangeAttempts = 0
+        let element = AXUIElementCreateSystemWide()
+
+        let outcome = SelectionReader.readSelection(
+            from: context(for: element, selection: .selected("brave")),
+            elementResolver: { _ in .resolved(element) },
+            attributeReader: { _, attribute in
+                switch attribute as String {
+                case kAXSelectedTextAttribute:
+                    return (.attributeUnsupported, nil)
+                case kAXSelectedTextRangeAttribute:
+                    rangeAttempts += 1
+                    return rangeAttempts == 1
+                        ? (.cannotComplete, nil)
+                        : (.success, rangeValue)
+                case kAXValueAttribute:
+                    return (.success, "hello brave new world" as CFString)
+                default:
+                    return (.attributeUnsupported, nil)
+                }
+            },
+            sleep: { _ in }
+        )
+
+        XCTAssertEqual(outcome, .selected("brave"))
+        XCTAssertEqual(rangeAttempts, 2)
+    }
+
+    func testTransientValueFailureRetriesFallback() {
+        var range = CFRange(location: 6, length: 5)
+        let rangeValue = AXValueCreate(.cfRange, &range)!
+        var valueAttempts = 0
+        let element = AXUIElementCreateSystemWide()
+
+        let outcome = SelectionReader.readSelection(
+            from: context(for: element, selection: .selected("brave")),
+            elementResolver: { _ in .resolved(element) },
+            attributeReader: { _, attribute in
+                switch attribute as String {
+                case kAXSelectedTextAttribute:
+                    return (.noValue, nil)
+                case kAXSelectedTextRangeAttribute:
+                    return (.success, rangeValue)
+                case kAXValueAttribute:
+                    valueAttempts += 1
+                    return valueAttempts == 1
+                        ? (.cannotComplete, nil)
+                        : (.success, "hello brave new world" as CFString)
+                default:
+                    return (.attributeUnsupported, nil)
+                }
+            },
+            sleep: { _ in }
+        )
+
+        XCTAssertEqual(outcome, .selected("brave"))
+        XCTAssertEqual(valueAttempts, 2)
+    }
+
+    func testUnsupportedRangeReportsUnreadable() {
+        let element = AXUIElementCreateSystemWide()
+
+        let outcome = SelectionReader.readSelection(
+            from: context(for: element),
+            elementResolver: { _ in .resolved(element) },
+            attributeReader: { _, attribute in
+                switch attribute as String {
+                case kAXSelectedTextAttribute:
+                    return (.attributeUnsupported, nil)
+                case kAXSelectedTextRangeAttribute:
+                    return (.attributeUnsupported, nil)
+                default:
+                    return (.success, nil)
+                }
+            },
+            sleep: { _ in }
+        )
+
+        XCTAssertEqual(outcome, .unreadable)
+    }
+
+    func testUnavailableValueForNonemptyRangeReportsUnreadable() {
+        var range = CFRange(location: 6, length: 5)
+        let rangeValue = AXValueCreate(.cfRange, &range)!
+        let element = AXUIElementCreateSystemWide()
+
+        let outcome = SelectionReader.readSelection(
+            from: context(for: element),
+            elementResolver: { _ in .resolved(element) },
+            attributeReader: { _, attribute in
+                switch attribute as String {
+                case kAXSelectedTextAttribute:
+                    return (.noValue, nil)
+                case kAXSelectedTextRangeAttribute:
+                    return (.success, rangeValue)
+                case kAXValueAttribute:
+                    return (.noValue, nil)
+                default:
+                    return (.success, nil)
+                }
+            },
+            sleep: { _ in }
+        )
+
+        XCTAssertEqual(outcome, .unreadable)
+    }
+
+    func testMalformedSelectedRangeReportsUnreadable() {
+        let element = AXUIElementCreateSystemWide()
+
+        let outcome = SelectionReader.readSelection(
+            from: context(for: element),
+            elementResolver: { _ in .resolved(element) },
+            attributeReader: { _, attribute in
+                switch attribute as String {
+                case kAXSelectedTextAttribute:
+                    return (.noValue, nil)
+                case kAXSelectedTextRangeAttribute:
+                    return (.success, "not a range" as CFString)
+                default:
+                    return (.success, nil)
+                }
+            },
+            sleep: { _ in }
+        )
+
+        XCTAssertEqual(outcome, .unreadable)
+    }
+
+    func testSelectionChangeBeforeReadReturnsUnreadable() {
+        let element = AXUIElementCreateApplication(101)
+        let context = context(for: element, selection: .selected("original selection"))
+
+        let outcome = SelectionReader.readSelection(
+            from: context,
+            elementResolver: { _ in .resolved(element) },
+            attributeReader: attributeReader(for: .selected("replacement selection")),
+            sleep: { _ in }
+        )
+
+        XCTAssertEqual(outcome, .unreadable)
+    }
+
+    func testSelectionChangeDuringRetryReturnsUnreadable() {
+        let element = AXUIElementCreateApplication(101)
+        let context = context(for: element, selection: .selected("original selection"))
+        var readAttempts = 0
+        var currentSelection = "original selection"
+
+        let outcome = SelectionReader.readSelection(
+            from: context,
+            elementResolver: { _ in .resolved(element) },
+            attributeReader: { _, attribute in
+                guard attribute as String == kAXSelectedTextAttribute else {
+                    return (.attributeUnsupported, nil)
+                }
+                readAttempts += 1
+                return readAttempts == 1
+                    ? (.cannotComplete, nil)
+                    : (.success, currentSelection as CFString)
+            },
+            sleep: { _ in currentSelection = "replacement selection" }
+        )
+
+        XCTAssertEqual(outcome, .unreadable)
+        XCTAssertEqual(readAttempts, 2)
+    }
+
+    func testCaptureContextFailsClosedOnTransientResolutionFailure() {
+        let element = AXUIElementCreateApplication(101)
+        var resolutionAttempts = 0
+
+        let context = SelectionReader.captureContext(
+            for: 101,
+            elementResolver: { _ in
+                resolutionAttempts += 1
+                return resolutionAttempts == 1
+                    ? .failed(.cannotComplete)
+                    : .resolved(element)
+            },
+            processIdentifierReader: { _ in 101 },
+            attributeReader: attributeReader(for: .selected("selection"))
+        )
+
+        XCTAssertNil(context)
+        XCTAssertEqual(resolutionAttempts, 1)
+    }
+
+    func testCaptureContextFailsClosedOnTransientSelectionRead() {
+        let element = AXUIElementCreateApplication(101)
+        var readAttempts = 0
+
+        let context = SelectionReader.captureContext(
+            for: 101,
+            elementResolver: { _ in .resolved(element) },
+            processIdentifierReader: { _ in 101 },
+            attributeReader: { _, attribute in
+                guard attribute as String == kAXSelectedTextAttribute else {
+                    return (.attributeUnsupported, nil)
+                }
+                readAttempts += 1
+                return readAttempts == 1
+                    ? (.cannotComplete, nil)
+                    : (.success, "replacement selection" as CFString)
+            }
+        )
+
+        XCTAssertNil(context)
+        XCTAssertEqual(readAttempts, 1)
+    }
+
+    func testReadRetriesTransientResolutionFailure() {
+        let element = AXUIElementCreateApplication(101)
+        let context = context(for: element, selection: .selected("selection"))
+        var resolutionAttempts = 0
+
+        let outcome = SelectionReader.readSelection(
+            from: context,
+            elementResolver: { _ in
+                resolutionAttempts += 1
+                return resolutionAttempts == 1
+                    ? .failed(.cannotComplete)
+                    : .resolved(element)
+            },
+            attributeReader: attributeReader(for: .selected("selection")),
+            sleep: { _ in }
+        )
+
+        XCTAssertEqual(outcome, .selected("selection"))
+        XCTAssertEqual(resolutionAttempts, 2)
+    }
+
+    func testFocusChangeBeforeReadReturnsUnreadable() throws {
+        let originalElement = AXUIElementCreateApplication(101)
+        let replacementElement = AXUIElementCreateApplication(202)
+        var focusedElement = originalElement
+        var resolutionCount = 0
+        let resolveFocusedElement: (pid_t) -> SelectionReader.ElementResolution = { _ in
+            resolutionCount += 1
+            return .resolved(focusedElement)
+        }
+        let context = try XCTUnwrap(SelectionReader.captureContext(
+            for: 101,
+            elementResolver: resolveFocusedElement,
+            processIdentifierReader: { _ in 101 },
+            attributeReader: attributeReader(for: .selected("selection"))
+        ))
+        focusedElement = replacementElement
+        var readAttempts = 0
+
+        let outcome = SelectionReader.readSelection(
+            from: context,
+            elementResolver: resolveFocusedElement,
+            attributeReader: { _, attribute in
+                guard attribute as String == kAXSelectedTextAttribute else {
+                    return (.attributeUnsupported, nil)
+                }
+                readAttempts += 1
+                return (.success, "selection" as CFString)
+            },
+            sleep: { _ in }
+        )
+
+        XCTAssertEqual(outcome, .unreadable)
+        XCTAssertEqual(resolutionCount, 2)
+        XCTAssertEqual(readAttempts, 0)
+    }
+
+    func testFocusChangeDuringRetryReturnsUnreadable() throws {
+        let originalElement = AXUIElementCreateApplication(101)
+        let replacementElement = AXUIElementCreateApplication(202)
+        var focusedElement = originalElement
+        var resolutionCount = 0
+        let resolveFocusedElement: (pid_t) -> SelectionReader.ElementResolution = { _ in
+            resolutionCount += 1
+            return .resolved(focusedElement)
+        }
+        let context = try XCTUnwrap(SelectionReader.captureContext(
+            for: 101,
+            elementResolver: resolveFocusedElement,
+            processIdentifierReader: { _ in 101 },
+            attributeReader: attributeReader(for: .selected("selection"))
+        ))
+        var readAttempts = 0
+
+        let outcome = SelectionReader.readSelection(
+            from: context,
+            elementResolver: resolveFocusedElement,
+            attributeReader: { _, attribute in
+                guard attribute as String == kAXSelectedTextAttribute else {
+                    return (.attributeUnsupported, nil)
+                }
+                readAttempts += 1
+                return (.cannotComplete, nil)
+            },
+            sleep: { _ in focusedElement = replacementElement }
+        )
+
+        XCTAssertEqual(outcome, .unreadable)
+        XCTAssertEqual(resolutionCount, 3)
+        XCTAssertEqual(readAttempts, 1)
+    }
+
+    func testInvalidCapturedElementReturnsUnreadable() throws {
+        let staleElement = AXUIElementCreateApplication(101)
+        var resolutionCount = 0
+        let resolveFocusedElement: (pid_t) -> SelectionReader.ElementResolution = { _ in
+            resolutionCount += 1
+            return .resolved(staleElement)
+        }
+        let context = try XCTUnwrap(SelectionReader.captureContext(
+            for: 101,
+            elementResolver: resolveFocusedElement,
+            processIdentifierReader: { _ in 101 },
+            attributeReader: attributeReader(for: .selected("selection"))
+        ))
+        var invalidAttempts = 0
+
+        let outcome = SelectionReader.readSelection(
+            from: context,
+            elementResolver: resolveFocusedElement,
+            attributeReader: { _, attribute in
+                guard attribute as String == kAXSelectedTextAttribute else {
+                    return (.attributeUnsupported, nil)
+                }
+                invalidAttempts += 1
+                return (.invalidUIElement, nil)
+            },
+            sleep: { _ in }
+        )
+
+        XCTAssertEqual(outcome, .unreadable)
+        XCTAssertEqual(resolutionCount, 4)
+        XCTAssertEqual(invalidAttempts, 3)
+    }
+
+    func testCaptureContextRejectsElementFromDifferentProcess() {
+        let foreignElement = AXUIElementCreateApplication(202)
+
+        let context = SelectionReader.captureContext(
+            for: 101,
+            elementResolver: { _ in .resolved(foreignElement) },
+            processIdentifierReader: { _ in 202 },
+            attributeReader: attributeReader(for: .selected("selection"))
+        )
+
+        XCTAssertNil(context)
+    }
+
+    func testDirectFocusedElementFromDifferentProcessUsesConstrainedFallback() throws {
+        let targetProcessIdentifier: pid_t = 101
+        let application = AXUIElementCreateApplication(targetProcessIdentifier)
+        let systemWide = AXUIElementCreateSystemWide()
+        let foreignElement = AXUIElementCreateApplication(202)
+        let targetElement = AXUIElementCreateApplication(targetProcessIdentifier)
+
+        let resolved = SelectionReader.resolveFocusedElement(
+            for: targetProcessIdentifier,
+            applicationElement: { _ in application },
+            systemWideElement: { systemWide },
+            attributeReader: { owner, _ in
+                CFEqual(owner, application)
+                    ? (.success, foreignElement)
+                    : (.success, targetElement)
+            },
+            processIdentifierReader: { element in
+                CFEqual(element, foreignElement) ? 202 : targetProcessIdentifier
+            }
+        )
+
+        guard case .resolved(let element) = resolved else {
+            return XCTFail("Expected the PID-constrained fallback element")
+        }
+        XCTAssertTrue(CFEqual(element, targetElement))
+    }
+
+    func testFocusedElementResolutionPreservesRetriableError() {
+        let targetProcessIdentifier: pid_t = 101
+        let application = AXUIElementCreateApplication(targetProcessIdentifier)
+        let systemWide = AXUIElementCreateSystemWide()
+        let foreignElement = AXUIElementCreateApplication(202)
+
+        let resolved = SelectionReader.resolveFocusedElement(
+            for: targetProcessIdentifier,
+            applicationElement: { _ in application },
+            systemWideElement: { systemWide },
+            attributeReader: { owner, _ in
+                CFEqual(owner, application)
+                    ? (.cannotComplete, nil)
+                    : (.success, foreignElement)
+            },
+            processIdentifierReader: { _ in 202 }
+        )
+
+        guard case .failed(let error) = resolved else {
+            return XCTFail("Expected focused-element resolution to fail")
+        }
+        XCTAssertEqual(error, .cannotComplete)
+    }
+
+    private func context(
+        for element: AXUIElement,
+        selection: SelectionReader.Outcome = .noSelection
+    ) -> SelectionReader.Context {
+        SelectionReader.captureContext(
+            for: 101,
+            elementResolver: { _ in .resolved(element) },
+            processIdentifierReader: { _ in 101 },
+            attributeReader: attributeReader(for: selection)
+        )!
+    }
+
+    private func attributeReader(
+        for selection: SelectionReader.Outcome
+    ) -> SelectionReader.AttributeReader {
+        { _, attribute in
+            guard attribute as String == kAXSelectedTextAttribute else {
+                return (.attributeUnsupported, nil)
+            }
+            switch selection {
+            case .selected(let text):
+                return (.success, text as CFString)
+            case .noSelection:
+                return (.success, "" as CFString)
+            case .unreadable:
+                return (.failure, nil)
+            }
+        }
     }
 }

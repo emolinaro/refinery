@@ -21,6 +21,27 @@ public final class AppModel: ObservableObject {
 
     private let hotkeyCenter: any HotkeyManaging
     private let persistSettings: (AppSettings) -> Void
+    private let accessibilityEnabled: () -> Bool
+    private let accessibilityPrompt: () -> Void
+    private let frontmostApplicationPID: () -> pid_t?
+    private let captureSelectionContext: (pid_t) -> SelectionReader.Context?
+    private let readSelection: @Sendable (SelectionReader.Context) -> SelectionReader.Outcome
+    private let readAPIKey: (URL) throws -> String?
+    private let polish: @Sendable (URL, String, String, Preset, String?, String) async throws -> String
+    private let writeClipboard: (String) -> Result<Void, ClipboardError>
+
+    private enum APIKeySnapshot: Sendable {
+        case available(String)
+        case missing
+        case failure(String)
+    }
+
+    private struct RequestConfiguration: Sendable {
+        let baseURL: URL?
+        let model: String
+        let preset: Preset
+        let apiKey: APIKeySnapshot?
+    }
 
     /// Exposes hotkey wiring to the app delegate.
     public func setTrigger(_ handler: @escaping () -> Void) {
@@ -48,12 +69,44 @@ public final class AppModel: ObservableObject {
         settings: AppSettings,
         settingsAreReadable: Bool = true,
         hotkeyCenter: any HotkeyManaging,
-        persistSettings: @escaping (AppSettings) -> Void = { $0.save() }
+        persistSettings: @escaping (AppSettings) -> Void = { $0.save() },
+        accessibilityEnabled: @escaping () -> Bool = SelectionReader.isAccessibilityEnabled,
+        accessibilityPrompt: @escaping () -> Void = SelectionReader.promptForAccessibility,
+        frontmostApplicationPID: @escaping () -> pid_t? = SelectionReader.frontmostApplicationPID,
+        captureSelectionContext: @escaping (pid_t) -> SelectionReader.Context? = {
+            SelectionReader.captureContext(for: $0)
+        },
+        readSelection: @escaping @Sendable (SelectionReader.Context) -> SelectionReader.Outcome = {
+            SelectionReader.readSelection(from: $0)
+        },
+        readAPIKey: @escaping (URL) throws -> String? = { try KeychainStore.readAPIKey(for: $0) },
+        polish: @escaping @Sendable (
+            URL,
+            String,
+            String,
+            Preset,
+            String?,
+            String
+        ) async throws -> String = { baseURL, model, text, preset, custom, key in
+            let client = EndpointClient(baseURL: baseURL, model: model)
+            return try await client.polish(text, preset: preset, customPrompt: custom, apiKey: key)
+        },
+        writeClipboard: @escaping (String) -> Result<Void, ClipboardError> = {
+            ClipboardStore.writeResult($0, to: NSPasteboard.general)
+        }
     ) {
         self.settings = settings
         self.settingsAreReadable = settingsAreReadable
         self.hotkeyCenter = hotkeyCenter
         self.persistSettings = persistSettings
+        self.accessibilityEnabled = accessibilityEnabled
+        self.accessibilityPrompt = accessibilityPrompt
+        self.frontmostApplicationPID = frontmostApplicationPID
+        self.captureSelectionContext = captureSelectionContext
+        self.readSelection = readSelection
+        self.readAPIKey = readAPIKey
+        self.polish = polish
+        self.writeClipboard = writeClipboard
         applyHotkey()
     }
 
@@ -107,6 +160,11 @@ public final class AppModel: ObservableObject {
         hotkeyCenter.resume()
     }
 
+    public func cancelHotkeyRecording() {
+        HotkeyRecorder.cancel()
+        hotkeyCenter.resume()
+    }
+
     /// Registers a newly recorded hotkey, keeping the previous registration
     /// and persisted settings when the new combination cannot be registered.
     @discardableResult
@@ -130,64 +188,142 @@ public final class AppModel: ObservableObject {
     public func handleHotkey() {
         guard !isRunning, NSApp.modalWindow == nil else { return }
 
+        let processIdentifier = frontmostApplicationPID()
+        let requestBaseURL = baseURL
+        let requestModel = settings.model
+        let requestPreset = settings.preset
+
         guard settingsAreReadable else {
             lastOutcome = .failure("Settings are unreadable. Re-open Refinery settings to reconfigure the endpoint.")
             return
         }
 
-        guard SelectionReader.isAccessibilityEnabled() else {
+        guard accessibilityEnabled() else {
             lastOutcome = .failure("Accessibility permission is required to read the selected text.")
-            SelectionReader.promptForAccessibility()
+            accessibilityPrompt()
             return
         }
 
-        guard let selected = SelectionReader.readSelectedText(),
-              !selected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            lastOutcome = .emptySelection
+        guard let processIdentifier else {
+            lastOutcome = .failure(
+                "Could not read the selection from the frontmost app. Try again in a moment."
+            )
             return
         }
 
-        guard let url = baseURL, EndpointClient.isAllowedBaseURL(url) else {
-            lastOutcome = .failure(EndpointError.invalidBaseURL.localizedDescription)
+        guard let selectionContext = captureSelectionContext(processIdentifier) else {
+            lastOutcome = .failure(
+                "Could not read the selection from the frontmost app. Try again in a moment."
+            )
             return
         }
 
-        let key: String
-        do {
-            guard let savedKey = try KeychainStore.readAPIKey(for: url) else {
-                lastOutcome = .failure(EndpointError.missingAPIKey.localizedDescription)
-                return
+        let apiKey: APIKeySnapshot?
+        if let url = requestBaseURL, EndpointClient.isAllowedBaseURL(url) {
+            do {
+                if let savedKey = try readAPIKey(url) {
+                    apiKey = .available(savedKey)
+                } else {
+                    apiKey = .missing
+                }
+            } catch {
+                apiKey = .failure(error.localizedDescription)
             }
+        } else {
+            apiKey = nil
+        }
+        let configuration = RequestConfiguration(
+            baseURL: requestBaseURL,
+            model: requestModel,
+            preset: requestPreset,
+            apiKey: apiKey
+        )
+
+        isRunning = true
+        let readSelection = self.readSelection
+        Task { [weak self] in
+            let selection = await Task.detached(priority: .userInitiated) {
+                readSelection(selectionContext)
+            }.value
+            self?.handle(selection: selection, configuration: configuration)
+        }
+    }
+
+    private func handle(
+        selection: SelectionReader.Outcome,
+        configuration: RequestConfiguration
+    ) {
+        let selected: String
+        switch selection {
+        case .selected(let text):
+            selected = text
+        case .noSelection:
+            lastOutcome = .emptySelection
+            isRunning = false
+            return
+        case .unreadable:
+            lastOutcome = .failure(
+                "Could not read the selection from the frontmost app. Try again in a moment."
+            )
+            isRunning = false
+            return
+        }
+
+        guard !selected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            lastOutcome = .emptySelection
+            isRunning = false
+            return
+        }
+
+        guard let url = configuration.baseURL, EndpointClient.isAllowedBaseURL(url) else {
+            lastOutcome = .failure(EndpointError.invalidBaseURL.localizedDescription)
+            isRunning = false
+            return
+        }
+
+        guard let apiKeySnapshot = configuration.apiKey else {
+            lastOutcome = .failure(EndpointError.missingAPIKey.localizedDescription)
+            isRunning = false
+            return
+        }
+        let key: String
+        switch apiKeySnapshot {
+        case .available(let savedKey):
             key = savedKey
-        } catch {
-            lastOutcome = .failure(error.localizedDescription)
+        case .missing:
+            lastOutcome = .failure(EndpointError.missingAPIKey.localizedDescription)
+            isRunning = false
+            return
+        case .failure(let message):
+            lastOutcome = .failure(message)
+            isRunning = false
             return
         }
 
         // Custom preset requires a typed prompt; the panel returns nil when cancelled.
         var customPrompt: String?
-        if settings.preset == .customOneOff {
-            guard let typed = CustomPromptPanel.prompt() else { return }
+        if configuration.preset == .customOneOff {
+            guard let typed = CustomPromptPanel.prompt() else {
+                isRunning = false
+                return
+            }
             customPrompt = typed
         }
 
-        isRunning = true
-        let preset = settings.preset
-        let model = settings.model
         let selectedText = selected
         let custom = customPrompt
         let apiKey = key
         Task { @MainActor in
             do {
-                let result = try await run(
-                    baseURL: url,
-                    model: model,
-                    text: selectedText,
-                    preset: preset,
-                    custom: custom,
-                    key: apiKey
+                let result = try await polish(
+                    url,
+                    configuration.model,
+                    selectedText,
+                    configuration.preset,
+                    custom,
+                    apiKey
                 )
-                switch ClipboardStore.writeResult(result, to: NSPasteboard.general) {
+                switch writeClipboard(result) {
                 case .success:
                     break
                 case .failure(let error):
@@ -201,18 +337,5 @@ public final class AppModel: ObservableObject {
                 isRunning = false
             }
         }
-    }
-
-    /// Runs the polish off the main actor to satisfy strict concurrency checking.
-    private nonisolated func run(
-        baseURL: URL,
-        model: String,
-        text: String,
-        preset: Preset,
-        custom: String?,
-        key: String
-    ) async throws -> String {
-        let client = EndpointClient(baseURL: baseURL, model: model)
-        return try await client.polish(text, preset: preset, customPrompt: custom, apiKey: key)
     }
 }

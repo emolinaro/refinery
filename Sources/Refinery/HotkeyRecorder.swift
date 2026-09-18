@@ -4,9 +4,8 @@ import SwiftUI
 
 /// Captures a global hotkey from the next key press with modifiers.
 ///
-/// Recording runs while the menu-bar dropdown is open, so keys arrive through
-/// an active CGEventTap on the main run loop in common modes: the tap
-/// keeps firing during menu tracking, where local NSEvent monitors never run.
+/// Recording runs from the settings popover. An active CGEventTap on the main
+/// run loop captures the next global key combination during the session.
 @MainActor
 enum HotkeyRecorder {
     static var currentSession: RecordingSession?
@@ -34,6 +33,10 @@ enum HotkeyRecorder {
         )
         currentSession = session
         session.start()
+    }
+
+    static func cancel() {
+        currentSession?.cancel()
     }
 
     /// True for combinations that would intercept universal shortcuts like
@@ -175,8 +178,8 @@ enum HotkeyRecorder {
 }
 
 /// A single recording session: owns an active event tap and ends itself
-/// when a combination is captured, on Escape, or when the settings menu
-/// closes.
+/// when a combination is captured, on Escape, app deactivation, or explicit
+/// cancellation.
 @MainActor
 final class RecordingSession {
     typealias TapFactory = (
@@ -274,9 +277,9 @@ final class RecordingSession {
         tapEnabler(tap)
     }
 
-    /// Observes the events that end the session early: the settings menu
-    /// closing and the app being deactivated. Both notifications are posted
-    /// on the main thread.
+    /// Observes menu tracking and app deactivation events that end the session
+    /// early. The app delegate cancels separately when the settings popover
+    /// closes.
     private func installEndObservers() {
         observers.append(NotificationCenter.default.addObserver(
             forName: NSMenu.didEndTrackingNotification,
@@ -301,6 +304,10 @@ final class RecordingSession {
     func invalidate() {
         finished = true
         teardown()
+    }
+
+    func cancel() {
+        finish(keyCode: nil, modifiers: nil, reason: "Cancelled.")
     }
 
     private func handleTapEvent(_ type: CGEventType, event: CGEvent) {

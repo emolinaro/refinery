@@ -1,8 +1,9 @@
 import SwiftUI
 
-/// Settings UI reachable from the menu-bar icon: endpoint URL, model, API key,
-/// and hotkey recording.
-struct SettingsView: View {
+/// Settings UI shown in a popover or window: endpoint URL, model, API key,
+/// and hotkey recording. Text entry requires a surface outside NSMenu
+/// tracking, which steals keyboard focus from menu-item views.
+public struct SettingsView: View {
     @ObservedObject var model: AppModel
 
     @State private var draftBaseURL = ""
@@ -10,8 +11,13 @@ struct SettingsView: View {
     @State private var draftAPIKey = ""
     @State private var recordingHotkey = false
     @State private var hotkeyFeedback: String?
+    @State private var endpointFeedback: String?
 
-    var body: some View {
+    public init(model: AppModel) {
+        self.model = model
+    }
+
+    public var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Endpoint")
                 .font(.headline)
@@ -46,6 +52,11 @@ struct SettingsView: View {
             Text("Stored only in the macOS Keychain.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            if let endpointFeedback {
+                Text(endpointFeedback)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             Divider()
 
@@ -84,7 +95,7 @@ struct SettingsView: View {
             HStack {
                 Spacer()
                 Button("Apply") {
-                    model.updateEndpoint(baseURL: draftBaseURL, model: draftModel)
+                    applyEndpoint()
                 }
                 .disabled(
                     draftBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -113,13 +124,22 @@ struct SettingsView: View {
         do {
             guard let url = URL(string: draftBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)),
                   EndpointClient.isAllowedBaseURL(url) else {
-                hotkeyFeedback = EndpointError.invalidBaseURL.localizedDescription
+                endpointFeedback = EndpointError.invalidBaseURL.localizedDescription
                 return
             }
             try KeychainStore.saveAPIKey(trimmed, for: url)
             draftAPIKey = ""
+            endpointFeedback = "API key saved."
         } catch {
-            hotkeyFeedback = error.localizedDescription
+            endpointFeedback = error.localizedDescription
+        }
+    }
+
+    private func applyEndpoint() {
+        if model.updateEndpoint(baseURL: draftBaseURL, model: draftModel) {
+            endpointFeedback = "Endpoint settings saved."
+        } else if case .failure(let message) = model.lastOutcome {
+            endpointFeedback = message
         }
     }
 }
