@@ -69,9 +69,7 @@ enum SelectionReader {
             for: processIdentifier,
             elementResolver: resolveFocusedElement,
             processIdentifierReader: processIdentifierOfElement,
-            attributeReader: copyAttributeValue,
-            childrenReader: copyChildren,
-            applicationElement: AXUIElementCreateApplication
+            attributeReader: copyAttributeValue
         )
     }
 
@@ -79,9 +77,7 @@ enum SelectionReader {
         for processIdentifier: pid_t,
         elementResolver: (pid_t) -> ElementResolution,
         processIdentifierReader: ProcessIdentifierReader,
-        attributeReader: AttributeReader,
-        childrenReader: ChildrenReader,
-        applicationElement: (pid_t) -> AXUIElement = AXUIElementCreateApplication
+        attributeReader: AttributeReader
     ) -> Capture {
         guard case .resolved(let element) = elementResolver(processIdentifier),
               processIdentifierReader(element) == processIdentifier,
@@ -95,20 +91,38 @@ enum SelectionReader {
                 element: element
             ))
         }
+        return .clipboardProbe(ClipboardContext(
+            processIdentifier: processIdentifier,
+            element: element
+        ))
+    }
+
+    static func applicationLacksTextSurfaces(for processIdentifier: pid_t) -> Bool {
+        applicationLacksTextSurfaces(
+            for: processIdentifier,
+            processIdentifierReader: processIdentifierOfElement,
+            attributeReader: copyAttributeValue,
+            childrenReader: copyChildren,
+            applicationElement: AXUIElementCreateApplication
+        )
+    }
+
+    static func applicationLacksTextSurfaces(
+        for processIdentifier: pid_t,
+        processIdentifierReader: ProcessIdentifierReader,
+        attributeReader: AttributeReader,
+        childrenReader: ChildrenReader,
+        applicationElement: (pid_t) -> AXUIElement
+    ) -> Bool {
         let application = applicationElement(processIdentifier)
         guard processIdentifierReader(application) == processIdentifier else {
-            return .unavailable
+            return false
         }
         return textCapability(
             rootedAt: application,
             attributeReader: attributeReader,
             childrenReader: childrenReader
         ) == .absent
-            ? .clipboardProbe(ClipboardContext(
-                processIdentifier: processIdentifier,
-                element: element
-            ))
-            : .unavailable
     }
 
     static func captureContext(

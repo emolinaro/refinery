@@ -1363,6 +1363,7 @@ final class ClipboardSelectionProbeTests: XCTestCase {
             accessibilityEnabled: { true },
             frontmostApplicationPID: { 101 },
             focusedElementResolver: focusedElementResolver(for: context),
+            applicationLacksTextSurfaces: { _ in true },
             synthesizeCopy: { true },
             wait: { _ in
                 waitCount += 1
@@ -1394,12 +1395,65 @@ final class ClipboardSelectionProbeTests: XCTestCase {
             accessibilityEnabled: { false },
             frontmostApplicationPID: { 101 },
             focusedElementResolver: focusedElementResolver(for: context),
+            applicationLacksTextSurfaces: { _ in true },
             synthesizeCopy: { synthesizeCount += 1; return true },
             wait: { _ in }
         )
 
         XCTAssertEqual(outcome, .unreadable)
         XCTAssertEqual(synthesizeCount, 0)
+        XCTAssertEqual(pasteboard.string(forType: .string), "original")
+    }
+
+    func testCopyProbeRevalidatesApplicationCapabilityBeforeSynthesis() async {
+        let context = clipboardContext()
+        let pasteboard = NSPasteboard(name: .init("RefineryTests.\(UUID().uuidString)"))
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString("original", forType: .string))
+        var synthesizeCount = 0
+
+        let outcome = await ClipboardSelectionProbe.read(
+            for: context,
+            pasteboard: pasteboard,
+            accessibilityEnabled: { true },
+            frontmostApplicationPID: { 101 },
+            focusedElementResolver: focusedElementResolver(for: context),
+            applicationLacksTextSurfaces: { _ in false },
+            synthesizeCopy: { synthesizeCount += 1; return true },
+            wait: { _ in }
+        )
+
+        XCTAssertEqual(outcome, .unreadable)
+        XCTAssertEqual(synthesizeCount, 0)
+        XCTAssertEqual(pasteboard.string(forType: .string), "original")
+    }
+
+    func testCopyProbeChecksApplicationCapabilityOffMainThread() async {
+        let context = clipboardContext()
+        let pasteboard = NSPasteboard(name: .init("RefineryTests.\(UUID().uuidString)"))
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString("original", forType: .string))
+        let capabilityRanOnMainThread = LockedBox<Bool?>(nil)
+
+        let outcome = await ClipboardSelectionProbe.read(
+            for: context,
+            pasteboard: pasteboard,
+            accessibilityEnabled: { true },
+            frontmostApplicationPID: { 101 },
+            focusedElementResolver: focusedElementResolver(for: context),
+            applicationLacksTextSurfaces: { _ in
+                capabilityRanOnMainThread.set(Thread.isMainThread)
+                return true
+            },
+            synthesizeCopy: {
+                XCTAssertEqual(capabilityRanOnMainThread.get(), false)
+                return false
+            },
+            wait: { _ in }
+        )
+
+        XCTAssertEqual(outcome, .unreadable)
+        XCTAssertEqual(capabilityRanOnMainThread.get(), false)
         XCTAssertEqual(pasteboard.string(forType: .string), "original")
     }
 
@@ -1415,6 +1469,7 @@ final class ClipboardSelectionProbeTests: XCTestCase {
             accessibilityEnabled: { true },
             frontmostApplicationPID: { 101 },
             focusedElementResolver: focusedElementResolver(for: context),
+            applicationLacksTextSurfaces: { _ in true },
             synthesizeCopy: {
                 _ = pasteboard.clearContents()
                 return pasteboard.setString("unattributed writer", forType: .string)
@@ -1439,6 +1494,7 @@ final class ClipboardSelectionProbeTests: XCTestCase {
             accessibilityEnabled: { true },
             frontmostApplicationPID: { 101 },
             focusedElementResolver: focusedElementResolver(for: context),
+            applicationLacksTextSurfaces: { _ in true },
             synthesizeCopy: { true },
             wait: { _ in
                 waitCount += 1
@@ -1466,6 +1522,7 @@ final class ClipboardSelectionProbeTests: XCTestCase {
             accessibilityEnabled: { true },
             frontmostApplicationPID: { 202 },
             focusedElementResolver: focusedElementResolver(for: context),
+            applicationLacksTextSurfaces: { _ in true },
             synthesizeCopy: { synthesizeCount += 1; return true },
             wait: { _ in }
         )
@@ -1489,6 +1546,7 @@ final class ClipboardSelectionProbeTests: XCTestCase {
             accessibilityEnabled: { true },
             frontmostApplicationPID: { 101 },
             focusedElementResolver: { _ in .resolved(replacementElement) },
+            applicationLacksTextSurfaces: { _ in true },
             synthesizeCopy: { synthesizeCount += 1; return true },
             wait: { _ in }
         )
@@ -1498,7 +1556,7 @@ final class ClipboardSelectionProbeTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), "original")
     }
 
-    func testCopyProbeRestoresCopyArrivingAfterInitialPollWindow() async {
+    func testCopyProbePreservesUnattributedCopyAfterInitialPollWindow() async {
         let context = clipboardContext()
         let pasteboard = NSPasteboard(name: .init("RefineryTests.\(UUID().uuidString)"))
         pasteboard.clearContents()
@@ -1511,6 +1569,7 @@ final class ClipboardSelectionProbeTests: XCTestCase {
             accessibilityEnabled: { true },
             frontmostApplicationPID: { 101 },
             focusedElementResolver: focusedElementResolver(for: context),
+            applicationLacksTextSurfaces: { _ in true },
             synthesizeCopy: { true },
             wait: { _ in
                 waitCount += 1
@@ -1521,8 +1580,36 @@ final class ClipboardSelectionProbeTests: XCTestCase {
             }
         )
 
-        XCTAssertEqual(outcome, .selected("late selection"))
-        XCTAssertEqual(pasteboard.string(forType: .string), "original")
+        XCTAssertEqual(outcome, .noSelection)
+        XCTAssertEqual(pasteboard.string(forType: .string), "late selection")
+    }
+
+    func testCopyProbePreservesNewerWriteBeforeRestoration() async {
+        let context = clipboardContext()
+        let original = NSPasteboardItem()
+        original.setString("original", forType: .string)
+        let pasteboard = ChangingAfterObservationPasteboard(items: [original])
+        var waitCount = 0
+
+        let outcome = await ClipboardSelectionProbe.read(
+            for: context,
+            pasteboard: pasteboard,
+            accessibilityEnabled: { true },
+            frontmostApplicationPID: { 101 },
+            focusedElementResolver: focusedElementResolver(for: context),
+            applicationLacksTextSurfaces: { _ in true },
+            synthesizeCopy: { true },
+            wait: { _ in
+                waitCount += 1
+                if waitCount == 1 {
+                    _ = pasteboard.clearContents()
+                    XCTAssertTrue(pasteboard.setString("Sublime selection", forType: .string))
+                }
+            }
+        )
+
+        XCTAssertNotEqual(outcome, .selected("Sublime selection"))
+        XCTAssertEqual(pasteboard.string(forType: .string), "newer clipboard")
     }
 
     func testCopyProbeSupersedesRepeatedAttributedCopyAfterRestoration() async {
@@ -1538,6 +1625,7 @@ final class ClipboardSelectionProbeTests: XCTestCase {
             accessibilityEnabled: { true },
             frontmostApplicationPID: { 101 },
             focusedElementResolver: focusedElementResolver(for: context),
+            applicationLacksTextSurfaces: { _ in true },
             synthesizeCopy: { true },
             wait: { _ in
                 waitCount += 1
@@ -1568,6 +1656,7 @@ final class ClipboardSelectionProbeTests: XCTestCase {
             accessibilityEnabled: { true },
             frontmostApplicationPID: { 101 },
             focusedElementResolver: focusedElementResolver(for: context),
+            applicationLacksTextSurfaces: { _ in true },
             synthesizeCopy: {
                 _ = pasteboard.clearContents()
                 return pasteboard.setString("Sublime selection", forType: .string)
@@ -1644,6 +1733,68 @@ private final class FailingPasteboard: PasteboardAccess {
         guard writeObjectsSucceeds else { return false }
         pasteboardItems = objects.compactMap { $0 as? NSPasteboardItem }
         changeCount += 1
+        return true
+    }
+}
+
+private final class ChangingAfterObservationPasteboard: PasteboardAccess {
+    private var items: [NSPasteboardItem]?
+    private var storedChangeCount = 0
+    private var candidateStringReadCount = 0
+    private var armConflictOnNextItemsRead = false
+    private var conflictPending = false
+
+    init(items: [NSPasteboardItem]) {
+        self.items = items
+    }
+
+    var pasteboardItems: [NSPasteboardItem]? {
+        if armConflictOnNextItemsRead {
+            armConflictOnNextItemsRead = false
+            conflictPending = true
+        }
+        return items
+    }
+
+    var changeCount: Int {
+        if conflictPending {
+            conflictPending = false
+            let item = NSPasteboardItem()
+            item.setString("newer clipboard", forType: .string)
+            items = [item]
+            storedChangeCount += 1
+        }
+        return storedChangeCount
+    }
+
+    func clearContents() -> Int {
+        storedChangeCount += 1
+        items = nil
+        return 0
+    }
+
+    func setString(_ string: String, forType dataType: NSPasteboard.PasteboardType) -> Bool {
+        let item = NSPasteboardItem()
+        guard item.setString(string, forType: dataType) else { return false }
+        items = [item]
+        storedChangeCount += 1
+        return true
+    }
+
+    func string(forType dataType: NSPasteboard.PasteboardType) -> String? {
+        let value = items?.first?.string(forType: dataType)
+        if value == "Sublime selection" {
+            candidateStringReadCount += 1
+            if candidateStringReadCount == 2 {
+                armConflictOnNextItemsRead = true
+            }
+        }
+        return value
+    }
+
+    func writeObjects(_ objects: [any NSPasteboardWriting]) -> Bool {
+        items = objects.compactMap { $0 as? NSPasteboardItem }
+        storedChangeCount += 1
         return true
     }
 }
@@ -1799,8 +1950,7 @@ final class SelectionReaderTests: XCTestCase {
                 default:
                     return (.attributeUnsupported, nil)
                 }
-            },
-            childrenReader: { _ in (.success, []) }
+            }
         )
 
         guard case .clipboardProbe(let context) = capture else {
@@ -1809,18 +1959,15 @@ final class SelectionReaderTests: XCTestCase {
         XCTAssertEqual(context.processIdentifier, 101)
     }
 
-    func testUnreadableTreeWithAccessibleTextRoleFailsClosed() {
+    func testApplicationCapabilityFindsAccessibleTextRole() {
         let window = AXUIElementCreateApplication(101)
         let textArea = AXUIElementCreateApplication(101)
 
-        let capture = SelectionReader.capture(
+        let lacksTextSurfaces = SelectionReader.applicationLacksTextSurfaces(
             for: 101,
-            elementResolver: { _ in .resolved(window) },
             processIdentifierReader: { _ in 101 },
             attributeReader: { element, attribute in
                 switch attribute as String {
-                case kAXSelectedTextAttribute, kAXSelectedTextRangeAttribute:
-                    return (.attributeUnsupported, nil)
                 case kAXRoleAttribute:
                     return (
                         .success,
@@ -1832,27 +1979,22 @@ final class SelectionReaderTests: XCTestCase {
             },
             childrenReader: { element in
                 CFEqual(element, window) ? (.success, [textArea]) : (.success, [])
-            }
+            },
+            applicationElement: { _ in window }
         )
 
-        guard case .unavailable = capture else {
-            return XCTFail("An AX-capable tree must not synthesize Command-C")
-        }
+        XCTAssertFalse(lacksTextSurfaces)
     }
 
-    func testTextSurfaceElsewhereInApplicationFailsClosed() {
+    func testApplicationCapabilityFindsTextSurfaceOutsideFocusedSubtree() {
         let application = AXUIElementCreateApplication(101)
-        let focusedButton = AXUIElementCreateSystemWide()
         let textArea = AXUIElementCreateApplication(202)
 
-        let capture = SelectionReader.capture(
+        let lacksTextSurfaces = SelectionReader.applicationLacksTextSurfaces(
             for: 101,
-            elementResolver: { _ in .resolved(focusedButton) },
             processIdentifierReader: { _ in 101 },
             attributeReader: { element, attribute in
                 switch attribute as String {
-                case kAXSelectedTextAttribute, kAXSelectedTextRangeAttribute:
-                    return (.attributeUnsupported, nil)
                 case kAXRoleAttribute:
                     if CFEqual(element, application) {
                         return (.success, kAXApplicationRole as CFString)
@@ -1867,12 +2009,29 @@ final class SelectionReaderTests: XCTestCase {
             },
             childrenReader: { element in
                 CFEqual(element, application) ? (.success, [textArea]) : (.success, [])
-            }
+            },
+            applicationElement: { _ in application }
         )
 
-        guard case .unavailable = capture else {
-            return XCTFail("An AX-capable application must not synthesize Command-C")
-        }
+        XCTAssertFalse(lacksTextSurfaces)
+    }
+
+    func testApplicationWithoutTextSurfacesPassesCapabilityCheck() {
+        let application = AXUIElementCreateApplication(101)
+
+        let lacksTextSurfaces = SelectionReader.applicationLacksTextSurfaces(
+            for: 101,
+            processIdentifierReader: { _ in 101 },
+            attributeReader: { _, attribute in
+                attribute as String == kAXRoleAttribute
+                    ? (.success, kAXWindowRole as CFString)
+                    : (.attributeUnsupported, nil)
+            },
+            childrenReader: { _ in (.success, []) },
+            applicationElement: { _ in application }
+        )
+
+        XCTAssertTrue(lacksTextSurfaces)
     }
 
     func testReadableEmptyAXSelectionDoesNotUseClipboardProbe() {
@@ -1891,8 +2050,7 @@ final class SelectionReaderTests: XCTestCase {
                 default:
                     return (.attributeUnsupported, nil)
                 }
-            },
-            childrenReader: { _ in (.success, []) }
+            }
         )
 
         guard case .accessibility(let context) = capture else {
