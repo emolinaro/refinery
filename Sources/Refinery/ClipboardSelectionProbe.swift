@@ -150,11 +150,6 @@ enum ClipboardSelectionProbe {
         let changeCount: Int
     }
 
-    private struct Eligibility: Sendable {
-        let applicationLacksTextSurfaces: Bool
-        let selectionEvidence: SelectionReader.SelectionEvidence
-    }
-
     enum OwnershipEvent: Equatable, Sendable {
         case began
         case endedSafely
@@ -179,11 +174,6 @@ enum ClipboardSelectionProbe {
         applicationLacksTextSurfaces: @escaping @Sendable (pid_t) -> Bool = {
             SelectionReader.applicationLacksTextSurfaces(for: $0)
         },
-        selectionEvidenceReader: @escaping @Sendable (
-            SelectionReader.ClipboardContext
-        ) -> SelectionReader.SelectionEvidence = {
-            SelectionReader.selectionEvidence(for: $0)
-        },
         focusContinuityMonitor: FocusContinuityFactory = { context, currentFocus in
             ApplicationFocusContinuityMonitor(
                 context: context,
@@ -202,19 +192,15 @@ enum ClipboardSelectionProbe {
         }
 
         let preflightChangeCount = pasteboard.changeCount
-        let eligibility = await readEligibility(
-            for: context,
-            applicationLacksTextSurfaces: applicationLacksTextSurfaces,
-            selectionEvidenceReader: selectionEvidenceReader
+        let preflightLacksTextSurfaces = await readApplicationLacksTextSurfaces(
+            for: context.processIdentifier,
+            reader: applicationLacksTextSurfaces
         )
         guard pasteboard.changeCount == preflightChangeCount else {
             return .clipboardFailure(.clipboardChanged)
         }
-        guard eligibility.applicationLacksTextSurfaces else {
+        guard preflightLacksTextSurfaces else {
             return .unreadable
-        }
-        guard eligibility.selectionEvidence == .present else {
-            return .clipboardFailure(.selectionUnverified)
         }
         guard capturedFocusRemainsCurrent(
             context,
@@ -237,26 +223,11 @@ enum ClipboardSelectionProbe {
             return .clipboardFailure(.clipboardChanged)
         }
 
-        let currentEligibility = await readEligibility(
-            for: context,
-            applicationLacksTextSurfaces: applicationLacksTextSurfaces,
-            selectionEvidenceReader: selectionEvidenceReader
-        )
-        guard currentEligibility.applicationLacksTextSurfaces else {
+        guard await readApplicationLacksTextSurfaces(
+            for: context.processIdentifier,
+            reader: applicationLacksTextSurfaces
+        ) else {
             return .unreadable
-        }
-        guard currentEligibility.selectionEvidence == .present else {
-            return .clipboardFailure(.selectionUnverified)
-        }
-        let immediateSelectionEvidence = await selectionEvidence(
-            for: context,
-            reader: selectionEvidenceReader
-        )
-        guard pasteboard.changeCount == preSnapshotChangeCount else {
-            return .clipboardFailure(.clipboardChanged)
-        }
-        guard immediateSelectionEvidence == .present else {
-            return .clipboardFailure(.selectionUnverified)
         }
         guard capturedFocusRemainsCurrent(
             context,
@@ -414,20 +385,19 @@ enum ClipboardSelectionProbe {
             return .clipboardFailure(error)
         }
 
-        if case .selected = outcome {
-            let observedSelectionEvidence = await selectionEvidence(
-                for: context,
-                reader: selectionEvidenceReader
-            )
+        if case .selected(let text) = outcome {
             guard pasteboard.changeCount == restoredChangeCount else {
                 finishOwnership(.endedSafely)
                 return .clipboardFailure(.clipboardChanged)
             }
-            if !focusContinuity.remainedFocused {
-                outcome = .unreadable
-            } else if observedSelectionEvidence != .present {
-                outcome = .clipboardFailure(.selectionUnverified)
+            if focusContinuity.remainedFocused {
+                finishOwnership(.endedSafely)
+                return .clipboardSelection(
+                    text,
+                    expectedChangeCount: restoredChangeCount
+                )
             }
+            outcome = .unreadable
         }
 
         let monitoredOutcome = await monitorLateEvents(
@@ -456,63 +426,32 @@ enum ClipboardSelectionProbe {
             guard pasteboard.changeCount != restoredChangeCount else {
                 continue
             }
-            guard case .selected = initialOutcome else {
-                guard initialPollExpired else {
-                    return .clipboardFailure(.clipboardChanged)
-                }
-                let lateChangeCount = pasteboard.changeCount
-                // Restoring the pre-probe snapshot takes priority in this bounded race even
-                // if the write was a genuine user copy. The visible timeout keeps it non-silent.
-                switch restoreSnapshot(
-                    snapshot,
-                    to: pasteboard,
-                    ifUnchangedSince: lateChangeCount
-                ) {
-                case .success:
-                    return .clipboardFailure(.selectionReadTimedOut)
-                case .failure(let error):
-                    return .clipboardFailure(error)
-                }
+            guard initialPollExpired else {
+                return .clipboardFailure(.clipboardChanged)
             }
-            return .clipboardFailure(.clipboardChanged)
-        }
-
-        // After this bounded window, a very late Command-C cannot be distinguished from a user copy.
-        if case .selected(let text) = initialOutcome {
-            return .clipboardSelection(
-                text,
-                expectedChangeCount: restoredChangeCount
-            )
+            let lateChangeCount = pasteboard.changeCount
+            // Restoring the pre-probe snapshot takes priority in this bounded race even
+            // if the write was a genuine user copy. The visible timeout keeps it non-silent.
+            switch restoreSnapshot(
+                snapshot,
+                to: pasteboard,
+                ifUnchangedSince: lateChangeCount
+            ) {
+            case .success:
+                return .clipboardFailure(.selectionReadTimedOut)
+            case .failure(let error):
+                return .clipboardFailure(error)
+            }
         }
         return initialOutcome
     }
 
-    private static func readEligibility(
-        for context: SelectionReader.ClipboardContext,
-        applicationLacksTextSurfaces: @escaping @Sendable (pid_t) -> Bool,
-        selectionEvidenceReader: @escaping @Sendable (
-            SelectionReader.ClipboardContext
-        ) -> SelectionReader.SelectionEvidence
-    ) async -> Eligibility {
+    private static func readApplicationLacksTextSurfaces(
+        for processIdentifier: pid_t,
+        reader: @escaping @Sendable (pid_t) -> Bool
+    ) async -> Bool {
         await Task.detached(priority: .userInitiated) {
-            let selectionEvidence = selectionEvidenceReader(context)
-            return Eligibility(
-                applicationLacksTextSurfaces: applicationLacksTextSurfaces(
-                    context.processIdentifier
-                ),
-                selectionEvidence: selectionEvidence
-            )
-        }.value
-    }
-
-    private static func selectionEvidence(
-        for context: SelectionReader.ClipboardContext,
-        reader: @escaping @Sendable (
-            SelectionReader.ClipboardContext
-        ) -> SelectionReader.SelectionEvidence
-    ) async -> SelectionReader.SelectionEvidence {
-        await Task.detached(priority: .userInitiated) {
-            reader(context)
+            reader(processIdentifier)
         }.value
     }
 

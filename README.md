@@ -56,13 +56,19 @@ running from one) access under System Settings -> Privacy & Security ->
 Accessibility.
 
 Refinery reads native Accessibility-backed text controls directly. When the
-focused app exposes no AX text surface at all, as with Sublime Text's custom
-editor rendering, Refinery falls back to a guarded copy probe: it snapshots
-every current pasteboard representation, synthesizes Command-C, reads the
-copied text, and restores the snapshot before making any endpoint request. If
-the clipboard cannot be snapshotted or restored safely, the run stops and
-surfaces an error instead of silently losing clipboard data. Native apps such
-as TextEdit, Mail, and Safari stay on the primary AX path.
+focused app exposes no AX text surface at all (its menu bar aside), as with
+Sublime Text's custom editor rendering, Refinery falls back to a guarded copy
+probe: it snapshots every current pasteboard representation, synthesizes
+Command-C, reads the copied text, and restores the snapshot before making any
+endpoint request. macOS exposes no pasteboard writer identity, so in such apps
+the non-empty clipboard read plus the tightly focused acceptance window is the
+strongest available verification that selected text was copied. One accepted
+residual: in these apps, pressing the hotkey with no selection can polish the
+current line, because apps like Sublime Text copy the current line on
+Command-C with nothing selected. If the clipboard cannot be snapshotted or
+restored safely, the run stops and surfaces an error instead of silently
+losing clipboard data. Native apps such as TextEdit, Mail, and Safari stay on
+the primary AX path.
 
 ## Settings
 
