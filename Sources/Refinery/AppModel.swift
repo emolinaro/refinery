@@ -24,8 +24,9 @@ public final class AppModel: ObservableObject {
     private let accessibilityEnabled: () -> Bool
     private let accessibilityPrompt: () -> Void
     private let frontmostApplicationPID: () -> pid_t?
-    private let captureSelectionContext: (pid_t) -> SelectionReader.Context?
+    private let captureSelection: (pid_t) -> SelectionReader.Capture
     private let readSelection: @Sendable (SelectionReader.Context) -> SelectionReader.Outcome
+    private let probeClipboardSelection: @MainActor @Sendable (pid_t) async -> SelectionReader.Outcome
     private let readAPIKey: (URL) throws -> String?
     private let polish: @Sendable (URL, String, String, Preset, String?, String) async throws -> String
     private let writeClipboard: (String) -> Result<Void, ClipboardError>
@@ -73,11 +74,12 @@ public final class AppModel: ObservableObject {
         accessibilityEnabled: @escaping () -> Bool = SelectionReader.isAccessibilityEnabled,
         accessibilityPrompt: @escaping () -> Void = SelectionReader.promptForAccessibility,
         frontmostApplicationPID: @escaping () -> pid_t? = SelectionReader.frontmostApplicationPID,
-        captureSelectionContext: @escaping (pid_t) -> SelectionReader.Context? = {
-            SelectionReader.captureContext(for: $0)
-        },
+        captureSelection: @escaping (pid_t) -> SelectionReader.Capture = SelectionReader.capture,
         readSelection: @escaping @Sendable (SelectionReader.Context) -> SelectionReader.Outcome = {
             SelectionReader.readSelection(from: $0)
+        },
+        probeClipboardSelection: @escaping @MainActor @Sendable (pid_t) async -> SelectionReader.Outcome = {
+            await ClipboardSelectionProbe.read(for: $0)
         },
         readAPIKey: @escaping (URL) throws -> String? = { try KeychainStore.readAPIKey(for: $0) },
         polish: @escaping @Sendable (
@@ -102,8 +104,9 @@ public final class AppModel: ObservableObject {
         self.accessibilityEnabled = accessibilityEnabled
         self.accessibilityPrompt = accessibilityPrompt
         self.frontmostApplicationPID = frontmostApplicationPID
-        self.captureSelectionContext = captureSelectionContext
+        self.captureSelection = captureSelection
         self.readSelection = readSelection
+        self.probeClipboardSelection = probeClipboardSelection
         self.readAPIKey = readAPIKey
         self.polish = polish
         self.writeClipboard = writeClipboard
@@ -211,7 +214,8 @@ public final class AppModel: ObservableObject {
             return
         }
 
-        guard let selectionContext = captureSelectionContext(processIdentifier) else {
+        let selectionCapture = captureSelection(processIdentifier)
+        if case .unavailable = selectionCapture {
             lastOutcome = .failure(
                 "Could not read the selection from the frontmost app. Try again in a moment."
             )
@@ -241,10 +245,19 @@ public final class AppModel: ObservableObject {
 
         isRunning = true
         let readSelection = self.readSelection
+        let probeClipboardSelection = self.probeClipboardSelection
         Task { [weak self] in
-            let selection = await Task.detached(priority: .userInitiated) {
-                readSelection(selectionContext)
-            }.value
+            let selection: SelectionReader.Outcome
+            switch selectionCapture {
+            case .accessibility(let context):
+                selection = await Task.detached(priority: .userInitiated) {
+                    readSelection(context)
+                }.value
+            case .clipboardProbe(let processIdentifier):
+                selection = await probeClipboardSelection(processIdentifier)
+            case .unavailable:
+                selection = .unreadable
+            }
             self?.handle(selection: selection, configuration: configuration)
         }
     }
@@ -265,6 +278,10 @@ public final class AppModel: ObservableObject {
             lastOutcome = .failure(
                 "Could not read the selection from the frontmost app. Try again in a moment."
             )
+            isRunning = false
+            return
+        case .clipboardFailure(let error):
+            lastOutcome = .failure(error.localizedDescription)
             isRunning = false
             return
         }

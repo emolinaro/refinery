@@ -5,6 +5,7 @@ import ApplicationServices
 /// Accessibility API (AXUIElement).
 enum SelectionReader {
     typealias AttributeReader = (AXUIElement, CFString) -> (AXError, CFTypeRef?)
+    typealias ChildrenReader = (AXUIElement) -> (AXError, [AXUIElement]?)
     typealias ProcessIdentifierReader = (AXUIElement) -> pid_t?
 
     /// The result of reading the current selection.
@@ -16,6 +17,9 @@ enum SelectionReader {
         /// The bound focus or selection changed, or the focused app failed the
         /// query.
         case unreadable
+        /// A clipboard probe changed the pasteboard but could not restore it,
+        /// or could not safely snapshot it before probing.
+        case clipboardFailure(ClipboardError)
     }
 
     struct Context: @unchecked Sendable {
@@ -27,6 +31,12 @@ enum SelectionReader {
     enum ElementResolution {
         case resolved(AXUIElement)
         case failed(AXError)
+    }
+
+    enum Capture {
+        case accessibility(Context)
+        case clipboardProbe(processIdentifier: pid_t)
+        case unavailable
     }
 
     /// After the hotkey-time context is captured, validation queries can fail
@@ -47,6 +57,44 @@ enum SelectionReader {
             processIdentifierReader: processIdentifierOfElement,
             attributeReader: copyAttributeValue
         )
+    }
+
+    static func capture(for processIdentifier: pid_t) -> Capture {
+        capture(
+            for: processIdentifier,
+            elementResolver: resolveFocusedElement,
+            processIdentifierReader: processIdentifierOfElement,
+            attributeReader: copyAttributeValue,
+            childrenReader: copyChildren
+        )
+    }
+
+    static func capture(
+        for processIdentifier: pid_t,
+        elementResolver: (pid_t) -> ElementResolution,
+        processIdentifierReader: ProcessIdentifierReader,
+        attributeReader: AttributeReader,
+        childrenReader: ChildrenReader
+    ) -> Capture {
+        guard case .resolved(let element) = elementResolver(processIdentifier),
+              processIdentifierReader(element) == processIdentifier,
+              let selection = attemptRead(from: element, attributeReader: attributeReader) else {
+            return .unavailable
+        }
+        if selection != .unreadable {
+            return .accessibility(Context(
+                processIdentifier: processIdentifier,
+                selection: selection,
+                element: element
+            ))
+        }
+        return textCapability(
+            rootedAt: element,
+            attributeReader: attributeReader,
+            childrenReader: childrenReader
+        ) == .absent
+            ? .clipboardProbe(processIdentifier: processIdentifier)
+            : .unavailable
     }
 
     static func captureContext(
@@ -271,6 +319,54 @@ enum SelectionReader {
         error == .cannotComplete || error == .invalidUIElement
     }
 
+    private enum TextCapability {
+        case present
+        case absent
+        case unknown
+    }
+
+    /// Proves that the focused subtree has no AX-backed text surface. Any
+    /// unreadable node or an unexpectedly large tree fails closed so the
+    /// clipboard fallback never runs merely because AX had a transient error.
+    private static func textCapability(
+        rootedAt root: AXUIElement,
+        attributeReader: AttributeReader,
+        childrenReader: ChildrenReader
+    ) -> TextCapability {
+        let maximumElements = 512
+        var pending = [root]
+        var visited = 0
+
+        while let element = pending.first {
+            pending.removeFirst()
+            visited += 1
+            guard visited <= maximumElements else { return .unknown }
+
+            let (roleResult, roleValue) = attributeReader(
+                element,
+                kAXRoleAttribute as CFString
+            )
+            guard roleResult == .success, let role = roleValue as? String else {
+                return .unknown
+            }
+            if role == kAXTextAreaRole || role == kAXTextFieldRole || role == "AXWebArea" {
+                return .present
+            }
+
+            let (childrenResult, children) = childrenReader(element)
+            switch childrenResult {
+            case .success:
+                guard let children else { return .unknown }
+                pending.append(contentsOf: children)
+            case .attributeUnsupported, .noValue:
+                break
+            default:
+                return .unknown
+            }
+        }
+        return .absent
+    }
+
     private static func copyAttributeValue(
         _ element: AXUIElement,
         _ attribute: CFString
@@ -278,6 +374,20 @@ enum SelectionReader {
         var value: CFTypeRef?
         let result = AXUIElementCopyAttributeValue(element, attribute, &value)
         return (result, value)
+    }
+
+    private static func copyChildren(_ element: AXUIElement) -> (AXError, [AXUIElement]?) {
+        let (result, value) = copyAttributeValue(
+            element,
+            kAXChildrenAttribute as CFString
+        )
+        if result == .attributeUnsupported || result == .noValue {
+            return (result, [])
+        }
+        guard result == .success, let children = value as? [AXUIElement] else {
+            return (result == .success ? .failure : result, nil)
+        }
+        return (.success, children)
     }
 
     private static func processIdentifierOfElement(_ element: AXUIElement) -> pid_t? {

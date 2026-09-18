@@ -2,10 +2,12 @@ import AppKit
 
 protocol PasteboardAccess: AnyObject {
     var pasteboardItems: [NSPasteboardItem]? { get }
+    var changeCount: Int { get }
 
     @discardableResult
     func clearContents() -> Int
     func setString(_ string: String, forType dataType: NSPasteboard.PasteboardType) -> Bool
+    func string(forType dataType: NSPasteboard.PasteboardType) -> String?
     func writeObjects(_ objects: [any NSPasteboardWriting]) -> Bool
 }
 
@@ -13,6 +15,10 @@ extension NSPasteboard: PasteboardAccess {}
 
 /// Owns clipboard writes after a polish run.
 public enum ClipboardStore {
+    struct Snapshot {
+        fileprivate let items: [NSPasteboardItem]
+    }
+
     /// Writes the polished text to the clipboard.
     @discardableResult
     public static func write(_ text: String, to pasteboard: NSPasteboard = .general) -> Bool {
@@ -32,6 +38,28 @@ public enum ClipboardStore {
         _ text: String,
         to pasteboard: any PasteboardAccess
     ) -> Result<Void, ClipboardError> {
+        let capturedSnapshot: Snapshot
+        switch snapshot(of: pasteboard) {
+        case .success(let captured):
+            capturedSnapshot = captured
+        case .failure(let error):
+            return .failure(error)
+        }
+        pasteboard.clearContents()
+        guard pasteboard.setString(text, forType: .string) else {
+            switch restore(capturedSnapshot, to: pasteboard) {
+            case .success:
+                return .failure(.writeFailed)
+            case .failure:
+                return .failure(.restorationFailed)
+            }
+        }
+        return .success(())
+    }
+
+    static func snapshot(
+        of pasteboard: any PasteboardAccess
+    ) -> Result<Snapshot, ClipboardError> {
         guard let currentItems = pasteboard.pasteboardItems else {
             return .failure(.snapshotFailed)
         }
@@ -44,19 +72,22 @@ public enum ClipboardStore {
             }
             previousItems.append(copy)
         }
+        return .success(Snapshot(items: previousItems))
+    }
+
+    static func restore(
+        _ snapshot: Snapshot,
+        to pasteboard: any PasteboardAccess
+    ) -> Result<Void, ClipboardError> {
         pasteboard.clearContents()
-        guard pasteboard.setString(text, forType: .string) else {
-            pasteboard.clearContents()
-            guard pasteboard.writeObjects(previousItems) else {
-                return .failure(.restorationFailed)
-            }
-            return .failure(.writeFailed)
+        guard pasteboard.writeObjects(snapshot.items) else {
+            return .failure(.restorationFailed)
         }
         return .success(())
     }
 }
 
-enum ClipboardError: LocalizedError, Equatable {
+enum ClipboardError: LocalizedError, Equatable, Sendable {
     case snapshotFailed
     case writeFailed
     case restorationFailed
