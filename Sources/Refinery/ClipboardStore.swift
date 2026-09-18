@@ -179,6 +179,7 @@ enum ClipboardError: LocalizedError, Equatable, Sendable {
     case snapshotFailed
     case probeFailed
     case selectionUnverified
+    case selectionReadTimedOut
     case clipboardChanged
     case writeFailed
     case restorationFailed
@@ -191,6 +192,8 @@ enum ClipboardError: LocalizedError, Equatable, Sendable {
             return "Could not safely prepare the clipboard to read the selected text."
         case .selectionUnverified:
             return "Could not verify that text is selected, so Command-C was not sent."
+        case .selectionReadTimedOut:
+            return "The selection copy arrived too late, so the previous clipboard was restored. Try again."
         case .clipboardChanged:
             return "The clipboard changed during processing, so its newer contents were preserved."
         case .writeFailed:

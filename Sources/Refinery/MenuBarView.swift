@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The menu-bar dropdown: status, preset picker, and a Settings button that
@@ -70,7 +71,7 @@ public struct MenuBarView: View {
             Divider()
 
             Button("Quit Refinery") {
-                model.requestQuit()
+                NSApplication.shared.terminate(nil)
             }
         }
         .frame(minWidth: 260)

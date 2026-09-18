@@ -34,9 +34,8 @@ public final class AppModel: ObservableObject {
     private let readAPIKey: (URL) throws -> String?
     private let polish: @Sendable (URL, String, String, Preset, String?, String) async throws -> String
     private let writeClipboard: (String, Int?) -> Result<Void, ClipboardError>
-    private let terminateApplication: () -> Void
     private var isClipboardOwnershipActive = false
-    private var quitRequested = false
+    private var pendingTerminationReply: ((Bool) -> Void)?
 
     private enum APIKeySnapshot: Sendable {
         case available(String)
@@ -112,9 +111,6 @@ public final class AppModel: ObservableObject {
                 to: NSPasteboard.general,
                 ifUnchangedSince: $1
             )
-        },
-        terminateApplication: @escaping () -> Void = {
-            NSApplication.shared.terminate(nil)
         }
     ) {
         self.settings = settings
@@ -130,7 +126,6 @@ public final class AppModel: ObservableObject {
         self.readAPIKey = readAPIKey
         self.polish = polish
         self.writeClipboard = writeClipboard
-        self.terminateApplication = terminateApplication
         applyHotkey()
     }
 
@@ -189,14 +184,15 @@ public final class AppModel: ObservableObject {
         hotkeyCenter.resume()
     }
 
-    func requestQuit() {
-        // Force Quit can still interrupt restoration because clipboard contents are never persisted.
-        guard isClipboardOwnershipActive else {
-            terminateApplication()
-            return
+    public func deferTerminationUntilClipboardRestored(
+        _ reply: @escaping (Bool) -> Void
+    ) -> Bool {
+        guard isClipboardOwnershipActive else { return false }
+        if pendingTerminationReply == nil {
+            pendingTerminationReply = reply
         }
-        quitRequested = true
         isFinishingClipboardRestore = true
+        return true
     }
 
     /// Registers a newly recorded hotkey, keeping the previous registration
@@ -303,14 +299,16 @@ public final class AppModel: ObservableObject {
             isClipboardOwnershipActive = true
         case .endedSafely:
             isClipboardOwnershipActive = false
-            guard quitRequested else { return }
-            quitRequested = false
             isFinishingClipboardRestore = false
-            terminateApplication()
+            let reply = pendingTerminationReply
+            pendingTerminationReply = nil
+            reply?(true)
         case .restorationFailed:
             isClipboardOwnershipActive = false
-            quitRequested = false
             isFinishingClipboardRestore = false
+            let reply = pendingTerminationReply
+            pendingTerminationReply = nil
+            reply?(false)
         }
     }
 

@@ -1185,8 +1185,8 @@ final class AppModelHotkeyTests: XCTestCase {
     func testQuitWaitsForClipboardOwnershipToEndSafely() async throws {
         _ = NSApplication.shared
         let ownershipBegan = expectation(description: "clipboard ownership began")
-        let terminated = expectation(description: "application terminated")
-        let terminationCount = Box(0)
+        let terminationReply = expectation(description: "termination reply")
+        let replyValue = Box<Bool?>(nil)
         let gate = AsyncStream<Void>.makeStream()
         let clipboardContext = SelectionReader.ClipboardContext(
             processIdentifier: 101,
@@ -1204,32 +1204,33 @@ final class AppModelHotkeyTests: XCTestCase {
                 for await _ in gate.stream.prefix(1) {}
                 ownershipChanged(.endedSafely)
                 return .noSelection
-            },
-            terminateApplication: {
-                terminationCount.value += 1
-                terminated.fulfill()
             }
         )
 
         model.handleHotkey()
         await fulfillment(of: [ownershipBegan], timeout: 1)
-        model.requestQuit()
+        let deferred = model.deferTerminationUntilClipboardRestored { shouldTerminate in
+            replyValue.value = shouldTerminate
+            terminationReply.fulfill()
+        }
 
+        XCTAssertTrue(deferred)
         XCTAssertTrue(model.isFinishingClipboardRestore)
-        XCTAssertEqual(terminationCount.value, 0)
+        XCTAssertNil(replyValue.value)
 
         gate.continuation.yield()
         gate.continuation.finish()
-        await fulfillment(of: [terminated], timeout: 1)
+        await fulfillment(of: [terminationReply], timeout: 1)
 
         XCTAssertFalse(model.isFinishingClipboardRestore)
-        XCTAssertEqual(terminationCount.value, 1)
+        XCTAssertEqual(replyValue.value, true)
     }
 
     func testQuitIsCancelledWhenClipboardRestorationFails() async throws {
         _ = NSApplication.shared
         let ownershipBegan = expectation(description: "clipboard ownership began")
-        let terminationCount = Box(0)
+        let terminationReply = expectation(description: "termination reply")
+        let replyValue = Box<Bool?>(nil)
         let gate = AsyncStream<Void>.makeStream()
         let clipboardContext = SelectionReader.ClipboardContext(
             processIdentifier: 101,
@@ -1247,23 +1248,25 @@ final class AppModelHotkeyTests: XCTestCase {
                 for await _ in gate.stream.prefix(1) {}
                 ownershipChanged(.restorationFailed)
                 return .clipboardFailure(.restorationFailed)
-            },
-            terminateApplication: {
-                terminationCount.value += 1
             }
         )
 
         model.handleHotkey()
         await fulfillment(of: [ownershipBegan], timeout: 1)
-        model.requestQuit()
+        let deferred = model.deferTerminationUntilClipboardRestored { shouldTerminate in
+            replyValue.value = shouldTerminate
+            terminationReply.fulfill()
+        }
+        XCTAssertTrue(deferred)
         gate.continuation.yield()
         gate.continuation.finish()
+        await fulfillment(of: [terminationReply], timeout: 1)
 
         for _ in 0..<100 where model.isRunning {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
 
-        XCTAssertEqual(terminationCount.value, 0)
+        XCTAssertEqual(replyValue.value, false)
         XCTAssertFalse(model.isFinishingClipboardRestore)
         XCTAssertEqual(
             model.lastOutcome,
@@ -1536,6 +1539,7 @@ final class ClipboardSelectionProbeTests: XCTestCase {
         let evidenceReads = LockedBox(0)
         let ownershipEvents = LockedBox<[ClipboardSelectionProbe.OwnershipEvent]>([])
         let eventsBeforeFinalEvidence = LockedBox<[ClipboardSelectionProbe.OwnershipEvent]?>(nil)
+        let eventsDuringLateWindow = LockedBox<[ClipboardSelectionProbe.OwnershipEvent]?>(nil)
 
         let outcome = await ClipboardSelectionProbe.read(
             for: context,
@@ -1561,6 +1565,8 @@ final class ClipboardSelectionProbeTests: XCTestCase {
                 if waitCount == 1 {
                     _ = pasteboard.clearContents()
                     XCTAssertTrue(pasteboard.setString("Sublime selection", forType: .string))
+                } else if waitCount == 2 {
+                    eventsDuringLateWindow.set(ownershipEvents.get())
                 }
             }
         )
@@ -1571,9 +1577,10 @@ final class ClipboardSelectionProbeTests: XCTestCase {
         XCTAssertEqual(text, "Sublime selection")
         XCTAssertEqual(expectedChangeCount, pasteboard.changeCount)
         XCTAssertEqual(ownershipEvents.get(), [.began, .endedSafely])
+        XCTAssertEqual(eventsDuringLateWindow.get(), [.began])
         XCTAssertEqual(
             eventsBeforeFinalEvidence.get(),
-            [.began, .endedSafely]
+            [.began]
         )
         XCTAssertEqual(pasteboard.pasteboardItems?.first?.string(forType: .string), "original clipboard")
         XCTAssertEqual(
@@ -1995,7 +2002,39 @@ final class ClipboardSelectionProbeTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), "original")
     }
 
-    func testCopyProbePreservesUnattributedCopyAfterInitialPollWindow() async {
+    func testCopyProbeRejectsInWindowWriteAfterFocusContinuityBreaks() async {
+        let context = clipboardContext()
+        let pasteboard = NSPasteboard(name: .init("RefineryTests.\(UUID().uuidString)"))
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString("original", forType: .string))
+        let focusContinuity = StubFocusContinuityMonitor()
+        var waitCount = 0
+
+        let outcome = await ClipboardSelectionProbe.read(
+            for: context,
+            pasteboard: pasteboard,
+            accessibilityEnabled: { true },
+            frontmostApplicationPID: { 101 },
+            focusedElementResolver: focusedElementResolver(for: context),
+            applicationLacksTextSurfaces: { _ in true },
+            selectionEvidenceReader: { _ in .present },
+            focusContinuityMonitor: { _, _ in focusContinuity },
+            synthesizeCopy: { true },
+            wait: { _ in
+                waitCount += 1
+                if waitCount == 1 {
+                    focusContinuity.invalidate()
+                    _ = pasteboard.clearContents()
+                    XCTAssertTrue(pasteboard.setString("unattributed secret", forType: .string))
+                }
+            }
+        )
+
+        XCTAssertEqual(outcome, .unreadable)
+        XCTAssertEqual(pasteboard.string(forType: .string), "original")
+    }
+
+    func testCopyProbeRestoresLateFirstCopyAndReportsTimeout() async {
         let context = clipboardContext()
         let pasteboard = NSPasteboard(name: .init("RefineryTests.\(UUID().uuidString)"))
         pasteboard.clearContents()
@@ -2020,8 +2059,12 @@ final class ClipboardSelectionProbeTests: XCTestCase {
             }
         )
 
-        XCTAssertEqual(outcome, .noSelection)
-        XCTAssertEqual(pasteboard.string(forType: .string), "late selection")
+        XCTAssertEqual(outcome, .clipboardFailure(.selectionReadTimedOut))
+        XCTAssertEqual(pasteboard.string(forType: .string), "original")
+        XCTAssertEqual(
+            ClipboardError.selectionReadTimedOut.localizedDescription,
+            "The selection copy arrived too late, so the previous clipboard was restored. Try again."
+        )
     }
 
     func testCopyProbePreservesNewerWriteBeforeRestoration() async {
@@ -2211,6 +2254,17 @@ final class ClipboardSelectionProbeTests: XCTestCase {
     ) -> (pid_t) -> SelectionReader.ElementResolution {
         { _ in .resolved(context.element) }
     }
+}
+
+@MainActor
+private final class StubFocusContinuityMonitor: FocusContinuityMonitoring {
+    private(set) var remainedFocused = true
+
+    func invalidate() {
+        remainedFocused = false
+    }
+
+    func stop() {}
 }
 
 private final class EmptyPasteboardDataProvider: NSObject, NSPasteboardItemDataProvider {

@@ -2,6 +2,132 @@ import AppKit
 import Carbon.HIToolbox
 import CoreGraphics
 
+@MainActor
+protocol FocusContinuityMonitoring: AnyObject {
+    var remainedFocused: Bool { get }
+    func stop()
+}
+
+private final class FocusContinuityState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Bool
+
+    init(_ value: Bool) {
+        self.value = value
+    }
+
+    var remainedFocused: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func invalidate() {
+        lock.lock()
+        value = false
+        lock.unlock()
+    }
+}
+
+private func focusContinuityDidChange(
+    observer: AXObserver,
+    element: AXUIElement,
+    notification: CFString,
+    refcon: UnsafeMutableRawPointer?
+) {
+    guard let refcon else { return }
+    Unmanaged<FocusContinuityState>
+        .fromOpaque(refcon)
+        .takeUnretainedValue()
+        .invalidate()
+}
+
+@MainActor
+private final class ApplicationFocusContinuityMonitor: FocusContinuityMonitoring {
+    private let currentFocus: @MainActor () -> Bool
+    private let state: FocusContinuityState
+    private var workspaceObserver: NSObjectProtocol?
+    private var accessibilityObserver: AXObserver?
+    private var observedApplication: AXUIElement?
+
+    init(
+        context: SelectionReader.ClipboardContext,
+        currentFocus: @escaping @MainActor () -> Bool
+    ) {
+        let targetProcessIdentifier = context.processIdentifier
+        self.currentFocus = currentFocus
+        state = FocusContinuityState(currentFocus())
+
+        workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [state, targetProcessIdentifier] notification in
+            guard let application = notification.userInfo?[
+                NSWorkspace.applicationUserInfoKey
+            ] as? NSRunningApplication,
+            application.processIdentifier == targetProcessIdentifier else {
+                state.invalidate()
+                return
+            }
+        }
+
+        var observer: AXObserver?
+        guard AXObserverCreate(
+            targetProcessIdentifier,
+            focusContinuityDidChange,
+            &observer
+        ) == .success,
+        let observer else {
+            return
+        }
+        let application = AXUIElementCreateApplication(targetProcessIdentifier)
+        guard AXObserverAddNotification(
+            observer,
+            application,
+            kAXFocusedUIElementChangedNotification as CFString,
+            Unmanaged.passUnretained(state).toOpaque()
+        ) == .success else {
+            return
+        }
+        accessibilityObserver = observer
+        observedApplication = application
+        CFRunLoopAddSource(
+            CFRunLoopGetMain(),
+            AXObserverGetRunLoopSource(observer),
+            .commonModes
+        )
+    }
+
+    var remainedFocused: Bool {
+        if !currentFocus() {
+            state.invalidate()
+        }
+        return state.remainedFocused
+    }
+
+    func stop() {
+        if let workspaceObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(workspaceObserver)
+            self.workspaceObserver = nil
+        }
+        if let accessibilityObserver, let observedApplication {
+            AXObserverRemoveNotification(
+                accessibilityObserver,
+                observedApplication,
+                kAXFocusedUIElementChangedNotification as CFString
+            )
+            CFRunLoopRemoveSource(
+                CFRunLoopGetMain(),
+                AXObserverGetRunLoopSource(accessibilityObserver),
+                .commonModes
+            )
+            self.accessibilityObserver = nil
+            self.observedApplication = nil
+        }
+    }
+}
+
 /// Reads a selection from apps that render text without exposing an AX text
 /// element. The probe first proves that the focused application subtree has no
 /// text-capable role, so native AX-backed apps never reach synthesis.
@@ -36,14 +162,18 @@ enum ClipboardSelectionProbe {
     }
 
     typealias OwnershipHandler = @MainActor @Sendable (OwnershipEvent) -> Void
+    typealias FocusContinuityFactory = @MainActor (
+        SelectionReader.ClipboardContext,
+        @escaping @MainActor () -> Bool
+    ) -> any FocusContinuityMonitoring
 
     @MainActor
     static func read(
         for context: SelectionReader.ClipboardContext,
         pasteboard: any PasteboardAccess = NSPasteboard.general,
-        accessibilityEnabled: () -> Bool = SelectionReader.isAccessibilityEnabled,
-        frontmostApplicationPID: () -> pid_t? = SelectionReader.frontmostApplicationPID,
-        focusedElementResolver: (pid_t) -> SelectionReader.ElementResolution = {
+        accessibilityEnabled: @escaping () -> Bool = SelectionReader.isAccessibilityEnabled,
+        frontmostApplicationPID: @escaping () -> pid_t? = SelectionReader.frontmostApplicationPID,
+        focusedElementResolver: @escaping (pid_t) -> SelectionReader.ElementResolution = {
             SelectionReader.resolveFocusedElement(for: $0)
         },
         applicationLacksTextSurfaces: @escaping @Sendable (pid_t) -> Bool = {
@@ -53,6 +183,12 @@ enum ClipboardSelectionProbe {
             SelectionReader.ClipboardContext
         ) -> SelectionReader.SelectionEvidence = {
             SelectionReader.selectionEvidence(for: $0)
+        },
+        focusContinuityMonitor: FocusContinuityFactory = { context, currentFocus in
+            ApplicationFocusContinuityMonitor(
+                context: context,
+                currentFocus: currentFocus
+            )
         },
         ownershipChanged: OwnershipHandler = { _ in },
         synthesizeCopy: () -> Bool = synthesizeCopyEvent,
@@ -131,6 +267,19 @@ enum ClipboardSelectionProbe {
             return .unreadable
         }
 
+        let focusContinuity = focusContinuityMonitor(context) {
+            capturedFocusRemainsCurrent(
+                context,
+                accessibilityEnabled: accessibilityEnabled,
+                frontmostApplicationPID: frontmostApplicationPID,
+                focusedElementResolver: focusedElementResolver
+            )
+        }
+        defer { focusContinuity.stop() }
+        guard focusContinuity.remainedFocused else {
+            return .unreadable
+        }
+
         let ownership: Ownership
         switch markOwnership(
             of: pasteboard,
@@ -154,6 +303,13 @@ enum ClipboardSelectionProbe {
             finishOwnership(
                 error == .restorationFailed ? .restorationFailed : .endedSafely
             )
+        }
+        func finishOwnership(after outcome: SelectionReader.Outcome) {
+            if case .clipboardFailure(let error) = outcome {
+                finishOwnership(after: error)
+            } else {
+                finishOwnership(.endedSafely)
+            }
         }
         func restoreAndFinish(
             ifUnchangedSince expectedChangeCount: Int,
@@ -183,6 +339,12 @@ enum ClipboardSelectionProbe {
             finishOwnership(.endedSafely)
             return .clipboardFailure(.clipboardChanged)
         }
+        guard focusContinuity.remainedFocused else {
+            return restoreAndFinish(
+                ifUnchangedSince: ownership.changeCount,
+                then: .unreadable
+            )
+        }
         guard synthesizeCopy() else {
             return restoreAndFinish(
                 ifUnchangedSince: ownership.changeCount,
@@ -197,9 +359,14 @@ enum ClipboardSelectionProbe {
 
         var outcome: SelectionReader.Outcome = .noSelection
         var expectedRestoreChangeCount = ownership.changeCount
+        var focusRemainedContinuous = focusContinuity.remainedFocused
+        var initialPollExpired = true
 
         for _ in 0..<pollAttempts {
             await wait(pollIntervalNanoseconds)
+            if !focusContinuity.remainedFocused {
+                focusRemainedContinuous = false
+            }
             guard pasteboard.changeCount != ownership.changeCount else {
                 continue
             }
@@ -210,18 +377,28 @@ enum ClipboardSelectionProbe {
                 finishOwnership(.endedSafely)
                 return .clipboardFailure(.clipboardChanged)
             }
+            initialPollExpired = false
             expectedRestoreChangeCount = observation.changeCount
             guard pasteboard.changeCount == observation.changeCount else {
                 finishOwnership(.endedSafely)
                 return .clipboardFailure(.clipboardChanged)
             }
+            guard focusRemainedContinuous else {
+                outcome = .unreadable
+                break
+            }
             guard let text = observation.text, !snapshot.containsString(text) else {
                 outcome = .noSelection
                 break
             }
-            // macOS exposes no public pasteboard writer identity, so an in-window write remains ambiguous.
+            // macOS exposes no pasteboard writer identity. A same-moment background write can
+            // still win while the target remains focused; the tight window and continuous focus
+            // lease are the strongest corroboration available for AX-hostile applications.
             outcome = text.isEmpty ? .noSelection : .selected(text)
             break
+        }
+        if !focusRemainedContinuous, case .noSelection = outcome {
+            outcome = .unreadable
         }
 
         let restoredChangeCount: Int
@@ -232,7 +409,6 @@ enum ClipboardSelectionProbe {
         ) {
         case .success(let changeCount):
             restoredChangeCount = changeCount
-            finishOwnership(.endedSafely)
         case .failure(let error):
             finishOwnership(after: error)
             return .clipboardFailure(error)
@@ -244,34 +420,35 @@ enum ClipboardSelectionProbe {
                 reader: selectionEvidenceReader
             )
             guard pasteboard.changeCount == restoredChangeCount else {
+                finishOwnership(.endedSafely)
                 return .clipboardFailure(.clipboardChanged)
             }
-            guard capturedFocusRemainsCurrent(
-                context,
-                accessibilityEnabled: accessibilityEnabled,
-                frontmostApplicationPID: frontmostApplicationPID,
-                focusedElementResolver: focusedElementResolver
-            ) else {
-                return .unreadable
-            }
-            guard observedSelectionEvidence == .present else {
-                return .clipboardFailure(.selectionUnverified)
+            if !focusContinuity.remainedFocused {
+                outcome = .unreadable
+            } else if observedSelectionEvidence != .present {
+                outcome = .clipboardFailure(.selectionUnverified)
             }
         }
 
-        return await monitorLateEvents(
+        let monitoredOutcome = await monitorLateEvents(
             after: restoredChangeCount,
+            restoring: snapshot,
             pasteboard: pasteboard,
             initialOutcome: outcome,
+            initialPollExpired: initialPollExpired,
             wait: wait
         )
+        finishOwnership(after: monitoredOutcome)
+        return monitoredOutcome
     }
 
     @MainActor
     private static func monitorLateEvents(
         after restoredChangeCount: Int,
+        restoring snapshot: ClipboardStore.Snapshot,
         pasteboard: any PasteboardAccess,
         initialOutcome: SelectionReader.Outcome,
+        initialPollExpired: Bool,
         wait: @escaping (UInt64) async -> Void
     ) async -> SelectionReader.Outcome {
         for _ in 0..<lateEventAttempts {
@@ -280,7 +457,22 @@ enum ClipboardSelectionProbe {
                 continue
             }
             guard case .selected = initialOutcome else {
-                return initialOutcome
+                guard initialPollExpired else {
+                    return .clipboardFailure(.clipboardChanged)
+                }
+                let lateChangeCount = pasteboard.changeCount
+                // Restoring the pre-probe snapshot takes priority in this bounded race even
+                // if the write was a genuine user copy. The visible timeout keeps it non-silent.
+                switch restoreSnapshot(
+                    snapshot,
+                    to: pasteboard,
+                    ifUnchangedSince: lateChangeCount
+                ) {
+                case .success:
+                    return .clipboardFailure(.selectionReadTimedOut)
+                case .failure(let error):
+                    return .clipboardFailure(error)
+                }
             }
             return .clipboardFailure(.clipboardChanged)
         }
