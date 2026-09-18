@@ -2021,6 +2021,42 @@ final class ClipboardSelectionProbeTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), "original")
     }
 
+    func testFocusedElementReannouncementThatResolvesToCapturedElementKeepsContinuity() {
+        // Live evidence: Sublime Text re-announces its unchanged focused element
+        // while handling the probe's own synthesized Command-C. The AX
+        // notification callback must not treat that re-announcement as a focus
+        // break when focus still resolves to the captured element.
+        let revalidationCount = LockedBox(0)
+        let signal = FocusContinuitySignal(revalidate: {
+            revalidationCount.set(revalidationCount.get() + 1)
+            return true
+        })
+
+        XCTAssertTrue(signal.remainedFocused)
+        signal.focusedElementChanged()
+        XCTAssertTrue(signal.remainedFocused)
+        signal.focusedElementChanged()
+        XCTAssertTrue(signal.remainedFocused)
+        XCTAssertEqual(revalidationCount.get(), 3, "each announcement must revalidate, not invalidate blindly")
+    }
+
+    func testFocusedElementAnnouncementBreakingRevalidationEndsContinuity() {
+        // The revalidation covers accessibility permission, frontmost app, and
+        // resolved focused-element identity: any failure means the captured
+        // focus is gone and the announcement is a genuine focus break.
+        let focusValid = LockedBox(true)
+        let signal = FocusContinuitySignal(revalidate: { focusValid.get() })
+
+        XCTAssertTrue(signal.remainedFocused)
+        focusValid.set(false)
+        signal.focusedElementChanged()
+        XCTAssertFalse(signal.remainedFocused)
+        // Sticky: later re-validations cannot resurrect a broken lease.
+        focusValid.set(true)
+        signal.focusedElementChanged()
+        XCTAssertFalse(signal.remainedFocused)
+    }
+
     func testCopyProbeRestoresLateFirstCopyAndReportsTimeout() async {
         let context = clipboardContext()
         let pasteboard = NSPasteboard(name: .init("RefineryTests.\(UUID().uuidString)"))

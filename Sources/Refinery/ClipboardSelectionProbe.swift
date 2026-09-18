@@ -8,12 +8,20 @@ protocol FocusContinuityMonitoring: AnyObject {
     func stop()
 }
 
-private final class FocusContinuityState: @unchecked Sendable {
+/// The sticky focus-continuity state plus the handler for the target app's
+/// focused-element announcements. An announcement breaks continuity only when
+/// focus no longer resolves to the captured element: AX-hostile editors
+/// (Sublime Text) re-announce their unchanged focused element while handling
+/// the probe's own synthesized Command-C, and that re-announcement is not a
+/// focus break.
+final class FocusContinuitySignal: @unchecked Sendable {
     private let lock = NSLock()
     private var value: Bool
+    private let revalidate: @Sendable () -> Bool
 
-    init(_ value: Bool) {
-        self.value = value
+    init(revalidate: @escaping @Sendable () -> Bool) {
+        self.revalidate = revalidate
+        value = revalidate()
     }
 
     var remainedFocused: Bool {
@@ -27,6 +35,18 @@ private final class FocusContinuityState: @unchecked Sendable {
         value = false
         lock.unlock()
     }
+
+    /// Runs when the target app announces a focused-element change (on the
+    /// main thread, from the AX observer's run loop source). The announcement
+    /// is only a focus break when the revalidation - accessibility permission,
+    /// frontmost application, and resolved focused-element identity - no
+    /// longer holds; a re-announcement that still resolves to the captured
+    /// element leaves continuity intact.
+    func focusedElementChanged() {
+        if !revalidate() {
+            invalidate()
+        }
+    }
 }
 
 private func focusContinuityDidChange(
@@ -36,38 +56,46 @@ private func focusContinuityDidChange(
     refcon: UnsafeMutableRawPointer?
 ) {
     guard let refcon else { return }
-    Unmanaged<FocusContinuityState>
+    Unmanaged<FocusContinuitySignal>
         .fromOpaque(refcon)
         .takeUnretainedValue()
-        .invalidate()
+        .focusedElementChanged()
 }
 
 @MainActor
 private final class ApplicationFocusContinuityMonitor: FocusContinuityMonitoring {
-    private let currentFocus: @MainActor () -> Bool
-    private let state: FocusContinuityState
+    private let currentFocus: @MainActor @Sendable () -> Bool
+    private let signal: FocusContinuitySignal
     private var workspaceObserver: NSObjectProtocol?
     private var accessibilityObserver: AXObserver?
     private var observedApplication: AXUIElement?
 
+    /// `currentFocus` fully revalidates the captured focus - accessibility
+    /// permission, frontmost application, and the resolved focused element's
+    /// identity - and runs on the main thread. The AX notification and
+    /// workspace observers below deliver on the main thread, so the
+    /// nonisolated signal hops there before revalidating.
     init(
         context: SelectionReader.ClipboardContext,
-        currentFocus: @escaping @MainActor () -> Bool
+        currentFocus: @escaping @MainActor @Sendable () -> Bool
     ) {
         let targetProcessIdentifier = context.processIdentifier
         self.currentFocus = currentFocus
-        state = FocusContinuityState(currentFocus())
+        let signal = FocusContinuitySignal(revalidate: { @Sendable [currentFocus] in
+            MainActor.assumeIsolated { currentFocus() }
+        })
+        self.signal = signal
 
         workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
             object: nil,
             queue: .main
-        ) { [state, targetProcessIdentifier] notification in
+        ) { [signal, targetProcessIdentifier] notification in
             guard let application = notification.userInfo?[
                 NSWorkspace.applicationUserInfoKey
             ] as? NSRunningApplication,
             application.processIdentifier == targetProcessIdentifier else {
-                state.invalidate()
+                signal.invalidate()
                 return
             }
         }
@@ -86,7 +114,7 @@ private final class ApplicationFocusContinuityMonitor: FocusContinuityMonitoring
             observer,
             application,
             kAXFocusedUIElementChangedNotification as CFString,
-            Unmanaged.passUnretained(state).toOpaque()
+            Unmanaged.passUnretained(signal).toOpaque()
         ) == .success else {
             return
         }
@@ -101,9 +129,9 @@ private final class ApplicationFocusContinuityMonitor: FocusContinuityMonitoring
 
     var remainedFocused: Bool {
         if !currentFocus() {
-            state.invalidate()
+            signal.invalidate()
         }
-        return state.remainedFocused
+        return signal.remainedFocused
     }
 
     func stop() {
@@ -157,9 +185,12 @@ enum ClipboardSelectionProbe {
     }
 
     typealias OwnershipHandler = @MainActor @Sendable (OwnershipEvent) -> Void
+    /// The second argument fully revalidates the captured focus (accessibility
+    /// permission, frontmost application, resolved focused-element identity)
+    /// and runs on the main thread.
     typealias FocusContinuityFactory = @MainActor (
         SelectionReader.ClipboardContext,
-        @escaping @MainActor () -> Bool
+        @escaping @MainActor @Sendable () -> Bool
     ) -> any FocusContinuityMonitoring
 
     @MainActor
