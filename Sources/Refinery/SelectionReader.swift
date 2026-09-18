@@ -13,7 +13,8 @@ enum SelectionReader {
         case selected(String)
         /// The focused element resolved but carries no selection.
         case noSelection
-        /// No focused element answered, or the focused app failed the query.
+        /// The bound focus or selection changed, or the focused app failed the
+        /// query.
         case unreadable
     }
 
@@ -28,9 +29,10 @@ enum SelectionReader {
         case failed(AXError)
     }
 
-    /// AX queries can fail transiently with `kAXErrorCannotComplete` while
-    /// the frontmost app is still processing the keyboard event that fired
-    /// the hotkey; a short settle-and-retry clears them.
+    /// After the hotkey-time context is captured, validation queries can fail
+    /// transiently while the frontmost app is still processing the event. A
+    /// short settle-and-retry clears supported transient errors without
+    /// rebinding the original selection.
     private static let settleAttempts = 3
     private static let settleInterval: TimeInterval = 0.08
 

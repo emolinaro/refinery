@@ -35,7 +35,17 @@ swift run Refinery
 ```
 
 The app runs as a menu-bar item (wand-and-stars icon). Open it to pick a
-preset, configure the endpoint, and record the hotkey.
+preset, then choose **Settings…** to configure the endpoint and record the
+hotkey.
+
+To build the release app bundle for Apple silicon:
+
+```sh
+./Scripts/build-app.sh
+```
+
+The script writes one ad-hoc-signed app to `.build/Refinery.app`. It replaces
+the previous bundle at that path and includes the MIT license.
 
 ## Permissions
 
