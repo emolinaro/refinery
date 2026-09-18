@@ -112,6 +112,7 @@ public enum ClipboardStore {
 enum ClipboardError: LocalizedError, Equatable, Sendable {
     case snapshotFailed
     case probeFailed
+    case selectionUnverified
     case clipboardChanged
     case writeFailed
     case restorationFailed
@@ -122,6 +123,8 @@ enum ClipboardError: LocalizedError, Equatable, Sendable {
             return "Could not safely read the current clipboard, so it was left unchanged."
         case .probeFailed:
             return "Could not safely prepare the clipboard to read the selected text."
+        case .selectionUnverified:
+            return "Could not verify that text is selected, so Command-C was not sent."
         case .clipboardChanged:
             return "The clipboard changed during selection capture, so its newer contents were preserved."
         case .writeFailed:

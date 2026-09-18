@@ -38,6 +38,12 @@ enum SelectionReader {
         case failed(AXError)
     }
 
+    enum SelectionEvidence: Equatable, Sendable {
+        case present
+        case absent
+        case unknown
+    }
+
     enum Capture {
         case accessibility(Context)
         case clipboardProbe(ClipboardContext)
@@ -104,6 +110,36 @@ enum SelectionReader {
             attributeReader: copyAttributeValue,
             childrenReader: copyChildren,
             applicationElement: AXUIElementCreateApplication
+        )
+    }
+
+    static func selectionEvidence(for context: ClipboardContext) -> SelectionEvidence {
+        selectionEvidence(
+            for: context,
+            attributeReader: copyAttributeValue,
+            applicationElement: AXUIElementCreateApplication
+        )
+    }
+
+    static func selectionEvidence(
+        for context: ClipboardContext,
+        attributeReader: AttributeReader,
+        applicationElement: (pid_t) -> AXUIElement
+    ) -> SelectionEvidence {
+        let focusedEvidence = selectionEvidence(
+            from: context.element,
+            attributeReader: attributeReader
+        )
+        switch focusedEvidence {
+        case .present, .absent:
+            return focusedEvidence
+        case .unknown:
+            break
+        }
+
+        return selectionEvidence(
+            from: applicationElement(context.processIdentifier),
+            attributeReader: attributeReader
         )
     }
 
@@ -326,6 +362,47 @@ enum SelectionReader {
             return slice(attributed.string, selectedRange)
         }
         return .unreadable
+    }
+
+    private static func selectionEvidence(
+        from element: AXUIElement,
+        attributeReader: AttributeReader
+    ) -> SelectionEvidence {
+        let (selectedResult, selectedValue) = attributeReader(
+            element,
+            kAXSelectedTextAttribute as CFString
+        )
+        let selectedTextEvidence: SelectionEvidence
+        if selectedResult == .success, let text = selectedValue as? String {
+            selectedTextEvidence = text.isEmpty ? .absent : .present
+        } else if selectedResult == .success,
+                  let attributed = selectedValue as? NSAttributedString {
+            selectedTextEvidence = attributed.string.isEmpty ? .absent : .present
+        } else {
+            selectedTextEvidence = .unknown
+        }
+
+        let (rangeResult, rangeValue) = attributeReader(
+            element,
+            kAXSelectedTextRangeAttribute as CFString
+        )
+        let selectedRangeEvidence: SelectionEvidence
+        if rangeResult == .success,
+           let selectedRange = range(from: rangeValue),
+           selectedRange.location >= 0,
+           selectedRange.length >= 0 {
+            selectedRangeEvidence = selectedRange.length == 0 ? .absent : .present
+        } else {
+            selectedRangeEvidence = .unknown
+        }
+
+        if selectedTextEvidence == .absent || selectedRangeEvidence == .absent {
+            return .absent
+        }
+        if selectedTextEvidence == .present || selectedRangeEvidence == .present {
+            return .present
+        }
+        return .unknown
     }
 
     static func slice(_ text: String, _ range: CFRange) -> Outcome {
