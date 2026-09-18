@@ -804,6 +804,15 @@ final class RecordingSessionTests: XCTestCase {
         XCTAssertNil(HotkeyRecorder.currentSession)
     }
 
+    func testExplicitCancellationEndsSessionAndClearsCurrentSession() {
+        let (_, box) = makeSession()
+
+        HotkeyRecorder.cancel()
+
+        XCTAssertEqual(box.value?.2, "Cancelled.")
+        XCTAssertNil(HotkeyRecorder.currentSession)
+    }
+
     func testInvalidatedSessionDeliversNoCompletion() {
         let (session, box) = makeSession()
         session.invalidate()
@@ -905,6 +914,56 @@ final class AppModelHotkeyTests: XCTestCase {
         XCTAssertTrue(model.adoptHotkey(keyCode: kVK_ANSI_J, modifiers: cmdKey | optionKey))
 
         XCTAssertEqual(model.lastOutcome, .failure("Endpoint failure"))
+    }
+
+    func testClosingSettingsCancelsRecordingAndResumesHotkey() {
+        let hotkeys = StubHotkeyManager(registrationResults: [true])
+        let model = AppModel(
+            settings: AppSettings(baseURL: "https://api.example.com/v1", model: "test-model"),
+            hotkeyCenter: hotkeys
+        )
+        let cancellation = Box<(UInt32?, UInt32?, String)?>(nil)
+        HotkeyRecorder.currentSession = RecordingSession { keyCode, modifiers, reason in
+            cancellation.value = (keyCode, modifiers, reason)
+        }
+        model.suspendHotkey()
+
+        model.cancelHotkeyRecording()
+
+        XCTAssertEqual(cancellation.value?.2, "Cancelled.")
+        XCTAssertNil(HotkeyRecorder.currentSession)
+        XCTAssertFalse(hotkeys.isTriggerSuppressed)
+    }
+
+    func testSelectionReadDoesNotBlockMainActor() async throws {
+        _ = NSApplication.shared
+        let readStarted = expectation(description: "selection read started")
+        let releaseRead = DispatchSemaphore(value: 0)
+        let model = AppModel(
+            settings: AppSettings(baseURL: "https://api.example.com/v1", model: "test-model"),
+            hotkeyCenter: StubHotkeyManager(registrationResults: [true]),
+            accessibilityEnabled: { true },
+            readSelection: {
+                readStarted.fulfill()
+                return releaseRead.wait(timeout: .now() + 1) == .success
+                    ? .noSelection
+                    : .unreadable
+            }
+        )
+
+        let startedAt = Date()
+        model.handleHotkey()
+
+        XCTAssertLessThan(Date().timeIntervalSince(startedAt), 0.25)
+        await fulfillment(of: [readStarted], timeout: 1)
+        XCTAssertTrue(model.isRunning)
+        releaseRead.signal()
+
+        for _ in 0..<100 where model.isRunning {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertFalse(model.isRunning)
+        XCTAssertEqual(model.lastOutcome, .emptySelection)
     }
 
     func testUnreadableSettingsAreNotPersistedByUnrelatedUpdates() {
@@ -1190,11 +1249,6 @@ private final class StubHotkeyManager: HotkeyManaging {
     }
 }
 
-/// SelectionReader unit tests.
-///
-/// The AXUIElement entry points cannot be faked (C functions), so these
-/// tests cover the pure outcome-mapping logic that the reader builds on:
-/// the retriability classification of AX errors and the slice helper.
 final class SelectionReaderTests: XCTestCase {
     func testSliceExtractsSelectedRange() {
         let outcome: SelectionReader.Outcome = .selected("brave")
@@ -1234,15 +1288,62 @@ final class SelectionReaderTests: XCTestCase {
             outcome
         )
     }
-}
 
-extension SelectionReader.Outcome: Equatable {
-    public static func == (lhs: SelectionReader.Outcome, rhs: SelectionReader.Outcome) -> Bool {
-        switch (lhs, rhs) {
-        case (.selected(let a), .selected(let b)): return a == b
-        case (.noSelection, .noSelection): return true
-        case (.unreadable, .unreadable): return true
-        default: return false
-        }
+    func testTransientSelectedRangeFailureRetriesFallback() {
+        var range = CFRange(location: 6, length: 5)
+        let rangeValue = AXValueCreate(.cfRange, &range)!
+        var rangeAttempts = 0
+
+        let outcome = SelectionReader.readSelection(
+            from: AXUIElementCreateSystemWide(),
+            attributeReader: { _, attribute in
+                switch attribute as String {
+                case kAXSelectedTextAttribute:
+                    return (.attributeUnsupported, nil)
+                case kAXSelectedTextRangeAttribute:
+                    rangeAttempts += 1
+                    return rangeAttempts == 1
+                        ? (.cannotComplete, nil)
+                        : (.success, rangeValue)
+                case kAXValueAttribute:
+                    return (.success, "hello brave new world" as CFString)
+                default:
+                    return (.attributeUnsupported, nil)
+                }
+            },
+            sleep: { _ in }
+        )
+
+        XCTAssertEqual(outcome, .selected("brave"))
+        XCTAssertEqual(rangeAttempts, 2)
+    }
+
+    func testTransientValueFailureRetriesFallback() {
+        var range = CFRange(location: 6, length: 5)
+        let rangeValue = AXValueCreate(.cfRange, &range)!
+        var valueAttempts = 0
+
+        let outcome = SelectionReader.readSelection(
+            from: AXUIElementCreateSystemWide(),
+            attributeReader: { _, attribute in
+                switch attribute as String {
+                case kAXSelectedTextAttribute:
+                    return (.noValue, nil)
+                case kAXSelectedTextRangeAttribute:
+                    return (.success, rangeValue)
+                case kAXValueAttribute:
+                    valueAttempts += 1
+                    return valueAttempts == 1
+                        ? (.cannotComplete, nil)
+                        : (.success, "hello brave new world" as CFString)
+                default:
+                    return (.attributeUnsupported, nil)
+                }
+            },
+            sleep: { _ in }
+        )
+
+        XCTAssertEqual(outcome, .selected("brave"))
+        XCTAssertEqual(valueAttempts, 2)
     }
 }

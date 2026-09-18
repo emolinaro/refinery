@@ -12,7 +12,7 @@ struct RefineryApplication: App {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopoverDelegate {
     let model = AppModel()
     private var statusItem: NSStatusItem?
     private var settingsPopover: NSPopover?
@@ -59,7 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         pendingSettings = false
         // Run on the next runloop turn so the menu's tracking session has
         // fully ended before the popover takes focus.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+        DispatchQueue.main.async { [weak self] in
             self?.openSettings()
         }
     }
@@ -69,6 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let popover = NSPopover()
         popover.behavior = .transient
+        popover.delegate = self
         popover.contentViewController = NSHostingController(
             rootView: SettingsView(model: model)
                 .frame(width: 380)
@@ -80,5 +81,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Note: NSApp.activate here races the menu teardown and can close a
         // .transient popover; the popover itself takes focus when shown.
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        model.cancelHotkeyRecording()
+        settingsPopover = nil
     }
 }

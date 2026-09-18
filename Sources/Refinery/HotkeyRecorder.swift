@@ -36,6 +36,10 @@ enum HotkeyRecorder {
         session.start()
     }
 
+    static func cancel() {
+        currentSession?.cancel()
+    }
+
     /// True for combinations that would intercept universal shortcuts like
     /// copy, paste, cut, undo, select-all, space or tab.
     nonisolated static func isReservedCombo(keyCode: UInt32, modifiers: UInt32) -> Bool {
@@ -301,6 +305,10 @@ final class RecordingSession {
     func invalidate() {
         finished = true
         teardown()
+    }
+
+    func cancel() {
+        finish(keyCode: nil, modifiers: nil, reason: "Cancelled.")
     }
 
     private func handleTapEvent(_ type: CGEventType, event: CGEvent) {

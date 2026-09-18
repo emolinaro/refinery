@@ -5,13 +5,13 @@ import ApplicationServices
 /// Accessibility API (AXUIElement).
 enum SelectionReader {
     /// The result of reading the current selection.
-    enum Outcome {
+    enum Outcome: Equatable, Sendable {
         /// Non-empty selected text read from the focused element.
         case selected(String)
         /// The focused element resolved but carries no selection.
         case noSelection
         /// No focused element answered, or the focused app failed the query.
-        case unreadable(String)
+        case unreadable
     }
 
     /// AX queries can fail transiently with `kAXErrorCannotComplete` while
@@ -30,7 +30,7 @@ enum SelectionReader {
     /// context.
     static func readSelection() -> Outcome {
         guard let element = resolveFocusedElement() else {
-            return .unreadable("no focused element responded")
+            return .unreadable
         }
         return readSelection(from: element)
     }
@@ -38,15 +38,27 @@ enum SelectionReader {
     /// Reads the selection of a resolved element, retrying transient
     /// failures a few times so a busy frontmost app can settle.
     static func readSelection(from element: AXUIElement) -> Outcome {
+        readSelection(
+            from: element,
+            attributeReader: copyAttributeValue,
+            sleep: { Thread.sleep(forTimeInterval: $0) }
+        )
+    }
+
+    static func readSelection(
+        from element: AXUIElement,
+        attributeReader: (AXUIElement, CFString) -> (AXError, CFTypeRef?),
+        sleep: (TimeInterval) -> Void
+    ) -> Outcome {
         for attempt in 1...settleAttempts {
-            if let outcome = attemptRead(from: element) {
+            if let outcome = attemptRead(from: element, attributeReader: attributeReader) {
                 return outcome
             }
             if attempt < settleAttempts {
-                Thread.sleep(forTimeInterval: settleInterval)
+                sleep(settleInterval)
             }
         }
-        return .unreadable("the focused app did not answer the accessibility query")
+        return .unreadable
     }
 
     /// True when the app has the accessibility permission needed to read
@@ -99,35 +111,47 @@ enum SelectionReader {
     // MARK: Selection reads
 
     /// One read attempt. Returns nil when a transient failure should be retried.
-    private static func attemptRead(from element: AXUIElement) -> Outcome? {
-        var selected: CFTypeRef?
-        let selectedResult = AXUIElementCopyAttributeValue(
+    private static func attemptRead(
+        from element: AXUIElement,
+        attributeReader: (AXUIElement, CFString) -> (AXError, CFTypeRef?)
+    ) -> Outcome? {
+        let (selectedResult, selected) = attributeReader(
             element,
-            kAXSelectedTextAttribute as CFString,
-            &selected
+            kAXSelectedTextAttribute as CFString
         )
         if selectedResult == .success {
             let text = (selected as? String) ?? ""
             return text.isEmpty ? .noSelection : .selected(text)
         }
         guard isRetriable(selectedResult) else {
-            return selectionFromRange(of: element)
+            return selectionFromRange(of: element, attributeReader: attributeReader)
         }
         return nil
     }
 
     /// Fallback path: the selected text range applied to the element's full value.
-    private static func selectionFromRange(of element: AXUIElement) -> Outcome {
-        guard let selectedRange = rangeValue(element, kAXSelectedTextRangeAttribute as CFString) else {
+    private static func selectionFromRange(
+        of element: AXUIElement,
+        attributeReader: (AXUIElement, CFString) -> (AXError, CFTypeRef?)
+    ) -> Outcome? {
+        let (rangeResult, rangeValue) = attributeReader(
+            element,
+            kAXSelectedTextRangeAttribute as CFString
+        )
+        guard rangeResult == .success else {
+            return isRetriable(rangeResult) ? nil : .noSelection
+        }
+        guard let selectedRange = range(from: rangeValue) else {
             return .noSelection
         }
-        var value: CFTypeRef?
-        let valueResult = AXUIElementCopyAttributeValue(
+        let (valueResult, value) = attributeReader(
             element,
-            kAXValueAttribute as CFString,
-            &value
+            kAXValueAttribute as CFString
         )
-        guard valueResult == .success, let value,
+        guard valueResult == .success else {
+            return isRetriable(valueResult) ? nil : .noSelection
+        }
+        guard let value,
               AXUIElementGetTypeID() != CFGetTypeID(value) else {
             return .noSelection
         }
@@ -158,11 +182,17 @@ enum SelectionReader {
         }
     }
 
-    private static func rangeValue(_ element: AXUIElement, _ attribute: CFString) -> CFRange? {
+    private static func copyAttributeValue(
+        _ element: AXUIElement,
+        _ attribute: CFString
+    ) -> (AXError, CFTypeRef?) {
         var value: CFTypeRef?
         let result = AXUIElementCopyAttributeValue(element, attribute, &value)
-        guard result == .success, let value else { return nil }
-        // CFRange comes back as an AXValue; convert.
+        return (result, value)
+    }
+
+    private static func range(from value: CFTypeRef?) -> CFRange? {
+        guard let value else { return nil }
         guard CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
         var range = CFRange(location: 0, length: 0)
         guard AXValueGetValue(value as! AXValue, .cfRange, &range) else { return nil }

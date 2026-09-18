@@ -11,6 +11,7 @@ public struct SettingsView: View {
     @State private var draftAPIKey = ""
     @State private var recordingHotkey = false
     @State private var hotkeyFeedback: String?
+    @State private var endpointFeedback: String?
 
     public init(model: AppModel) {
         self.model = model
@@ -51,6 +52,11 @@ public struct SettingsView: View {
             Text("Stored only in the macOS Keychain.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            if let endpointFeedback {
+                Text(endpointFeedback)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             Divider()
 
@@ -89,7 +95,7 @@ public struct SettingsView: View {
             HStack {
                 Spacer()
                 Button("Apply") {
-                    model.updateEndpoint(baseURL: draftBaseURL, model: draftModel)
+                    applyEndpoint()
                 }
                 .disabled(
                     draftBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -118,13 +124,22 @@ public struct SettingsView: View {
         do {
             guard let url = URL(string: draftBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)),
                   EndpointClient.isAllowedBaseURL(url) else {
-                hotkeyFeedback = EndpointError.invalidBaseURL.localizedDescription
+                endpointFeedback = EndpointError.invalidBaseURL.localizedDescription
                 return
             }
             try KeychainStore.saveAPIKey(trimmed, for: url)
             draftAPIKey = ""
+            endpointFeedback = "API key saved."
         } catch {
-            hotkeyFeedback = error.localizedDescription
+            endpointFeedback = error.localizedDescription
+        }
+    }
+
+    private func applyEndpoint() {
+        if model.updateEndpoint(baseURL: draftBaseURL, model: draftModel) {
+            endpointFeedback = "Endpoint settings saved."
+        } else if case .failure(let message) = model.lastOutcome {
+            endpointFeedback = message
         }
     }
 }

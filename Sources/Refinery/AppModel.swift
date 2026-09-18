@@ -21,6 +21,9 @@ public final class AppModel: ObservableObject {
 
     private let hotkeyCenter: any HotkeyManaging
     private let persistSettings: (AppSettings) -> Void
+    private let accessibilityEnabled: () -> Bool
+    private let accessibilityPrompt: () -> Void
+    private let readSelection: @Sendable () -> SelectionReader.Outcome
 
     /// Exposes hotkey wiring to the app delegate.
     public func setTrigger(_ handler: @escaping () -> Void) {
@@ -48,12 +51,20 @@ public final class AppModel: ObservableObject {
         settings: AppSettings,
         settingsAreReadable: Bool = true,
         hotkeyCenter: any HotkeyManaging,
-        persistSettings: @escaping (AppSettings) -> Void = { $0.save() }
+        persistSettings: @escaping (AppSettings) -> Void = { $0.save() },
+        accessibilityEnabled: @escaping () -> Bool = SelectionReader.isAccessibilityEnabled,
+        accessibilityPrompt: @escaping () -> Void = SelectionReader.promptForAccessibility,
+        readSelection: @escaping @Sendable () -> SelectionReader.Outcome = {
+            SelectionReader.readSelection()
+        }
     ) {
         self.settings = settings
         self.settingsAreReadable = settingsAreReadable
         self.hotkeyCenter = hotkeyCenter
         self.persistSettings = persistSettings
+        self.accessibilityEnabled = accessibilityEnabled
+        self.accessibilityPrompt = accessibilityPrompt
+        self.readSelection = readSelection
         applyHotkey()
     }
 
@@ -107,6 +118,11 @@ public final class AppModel: ObservableObject {
         hotkeyCenter.resume()
     }
 
+    public func cancelHotkeyRecording() {
+        HotkeyRecorder.cancel()
+        hotkeyCenter.resume()
+    }
+
     /// Registers a newly recorded hotkey, keeping the previous registration
     /// and persisted settings when the new combination cannot be registered.
     @discardableResult
@@ -135,40 +151,48 @@ public final class AppModel: ObservableObject {
             return
         }
 
-        let selection: SelectionReader.Outcome
-        if SelectionReader.isAccessibilityEnabled() {
-            selection = SelectionReader.readSelection()
-        } else {
+        guard accessibilityEnabled() else {
             lastOutcome = .failure("Accessibility permission is required to read the selected text.")
-            SelectionReader.promptForAccessibility()
+            accessibilityPrompt()
             return
         }
 
+        isRunning = true
+        let readSelection = self.readSelection
+        Task { [weak self] in
+            let selection = await Task.detached(priority: .userInitiated) {
+                readSelection()
+            }.value
+            self?.handle(selection: selection)
+        }
+    }
+
+    private func handle(selection: SelectionReader.Outcome) {
         let selected: String
         switch selection {
         case .selected(let text):
             selected = text
         case .noSelection:
             lastOutcome = .emptySelection
+            isRunning = false
             return
         case .unreadable:
-            // A failed accessibility query is not "no text selected": report
-            // it so the difference between a missing selection and an app
-            // that would not answer stays visible. The detailed reason is
-            // kept out of the user-facing line by design.
             lastOutcome = .failure(
                 "Could not read the selection from the frontmost app. Try again in a moment."
             )
+            isRunning = false
             return
         }
 
         guard !selected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             lastOutcome = .emptySelection
+            isRunning = false
             return
         }
 
         guard let url = baseURL, EndpointClient.isAllowedBaseURL(url) else {
             lastOutcome = .failure(EndpointError.invalidBaseURL.localizedDescription)
+            isRunning = false
             return
         }
 
@@ -176,22 +200,26 @@ public final class AppModel: ObservableObject {
         do {
             guard let savedKey = try KeychainStore.readAPIKey(for: url) else {
                 lastOutcome = .failure(EndpointError.missingAPIKey.localizedDescription)
+                isRunning = false
                 return
             }
             key = savedKey
         } catch {
             lastOutcome = .failure(error.localizedDescription)
+            isRunning = false
             return
         }
 
         // Custom preset requires a typed prompt; the panel returns nil when cancelled.
         var customPrompt: String?
         if settings.preset == .customOneOff {
-            guard let typed = CustomPromptPanel.prompt() else { return }
+            guard let typed = CustomPromptPanel.prompt() else {
+                isRunning = false
+                return
+            }
             customPrompt = typed
         }
 
-        isRunning = true
         let preset = settings.preset
         let model = settings.model
         let selectedText = selected

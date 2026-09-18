@@ -1,22 +1,27 @@
 #!/bin/bash
-# Builds the release Refinery.app bundle (arm64, ad-hoc signed, LSUIElement)
-# and copies it to the paths passed as arguments (if any).
+# Builds the release Refinery.app bundle (arm64, ad-hoc signed, LSUIElement).
 #
-# Usage: ./Scripts/build-app.sh [destination.app ...]
+# Usage: ./Scripts/build-app.sh
 set -euo pipefail
 
+if (( $# != 0 )); then
+    echo "usage: ./Scripts/build-app.sh" >&2
+    exit 64
+fi
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BUILD_DIR="$(mktemp -d)"
-trap 'rm -rf "$BUILD_DIR"' EXIT
+APP="$REPO_ROOT/.build/Refinery.app"
+STAGING_APP="$REPO_ROOT/.build/.Refinery.app.new"
 
 cd "$REPO_ROOT"
-swift build -c release --product Refinery --scratch-path "$BUILD_DIR"
+swift build -c release --product Refinery --arch arm64
+BIN_DIR="$(swift build -c release --arch arm64 --show-bin-path)"
 
-APP="$BUILD_DIR/release/Refinery.app"
-mkdir -p "$APP/Contents/MacOS"
-cp "$BUILD_DIR/release/Refinery" "$APP/Contents/MacOS/Refinery"
+rm -rf "$STAGING_APP"
+mkdir -p "$STAGING_APP/Contents/MacOS"
+cp "$BIN_DIR/Refinery" "$STAGING_APP/Contents/MacOS/Refinery"
 
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+cat > "$STAGING_APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -43,20 +48,9 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-codesign --force --sign - "$APP"
-
-for DEST in "$@"; do
-    TARGET="$(dirname "$DEST")/.$(basename "$DEST").new"
-    rm -rf "$TARGET"
-    cp -R "$APP" "$TARGET"
-    # Atomically replace even a running bundle: kill instances first.
-    if pgrep -f "$DEST/Contents/MacOS/Refinery" >/dev/null 2>&1; then
-        pkill -f "$DEST/Contents/MacOS/Refinery" || true
-        sleep 1
-    fi
-    rm -rf "$DEST"
-    mv "$TARGET" "$DEST"
-    echo "installed: $DEST"
-done
+lipo "$STAGING_APP/Contents/MacOS/Refinery" -verify_arch arm64
+codesign --force --sign - "$STAGING_APP"
+rm -rf "$APP"
+mv "$STAGING_APP" "$APP"
 
 echo "built: $APP (arm64, ad-hoc signed)"
