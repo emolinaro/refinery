@@ -18,8 +18,9 @@ swift build -c release --product Refinery --arch arm64
 BIN_DIR="$(swift build -c release --arch arm64 --show-bin-path)"
 
 rm -rf "$STAGING_APP"
-mkdir -p "$STAGING_APP/Contents/MacOS"
+mkdir -p "$STAGING_APP/Contents/MacOS" "$STAGING_APP/Contents/Resources"
 cp "$BIN_DIR/Refinery" "$STAGING_APP/Contents/MacOS/Refinery"
+cp "$REPO_ROOT/LICENSE" "$STAGING_APP/Contents/Resources/LICENSE"
 
 cat > "$STAGING_APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
