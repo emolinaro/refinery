@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-19
+
+### Fixed
+
+- Selection capture in AX-hostile editors such as Sublime Text: a guarded
+  clipboard fallback now snapshots the clipboard, synthesizes Command-C,
+  reads the copied text, and restores the clipboard before the polish
+  request, so selected text can be polished in apps that hide their
+  selection from accessibility APIs.
+- Clipboard safety hardening: clipboard contents survive every adversarial
+  capture path, quitting mid-probe defers termination until restoration
+  finishes, and a failed restore cancels the quit instead of losing data.
+- Focus-continuity checks so the fallback never pastes into the wrong app,
+  with fail-closed guards when focus or selection cannot be proven.
+- Removed an unreachable clipboard-restore status flag and its menu branch
+  (dead code left over from the fallback hardening rounds).
+
 ## [0.1.0] - 2026-09-18
 
 ### Added
