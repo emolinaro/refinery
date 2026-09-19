@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-19
+
+### Fixed
+
+- Sublime/AX-hostile fallback: pressing the hotkey with the wanted text already
+  on the clipboard (copy, select, hotkey - the natural flow) no longer reports
+  "no text selected"; a probe copy that equals the pre-probe clipboard text is
+  accepted as a valid selection.
+- The accessibility permission prompt now fires at most once per launch with a
+  quiet menu-bar status line, instead of popping System Settings on every
+  hotkey press; a rebuilt app gets an honest re-grant message instead of a
+  silent mismatch.
+- The hotkey-recording prompt rides the same once-per-launch gate.
+- New installs start with blank endpoint fields instead of a dead default
+  endpoint URL.
+
 ## [0.2.0] - 2026-09-19
 
 ### Added
