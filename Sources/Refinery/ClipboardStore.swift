@@ -15,6 +15,12 @@ extension NSPasteboard: PasteboardAccess {}
 
 /// Owns clipboard writes after a polish run.
 public enum ClipboardStore {
+    /// A full-fidelity copy of every current pasteboard representation,
+    /// restored verbatim (after a failed write or a clipboard probe) so the
+    /// user's clipboard is never silently lost. `stringRepresentation` is
+    /// the pasteboard's combined string view (multi-item pasteboards join
+    /// with newlines), which lets the probe reject a copy that only repeats
+    /// what the user already had.
     struct Snapshot {
         fileprivate let items: [NSPasteboardItem]
         fileprivate let stringRepresentation: String?

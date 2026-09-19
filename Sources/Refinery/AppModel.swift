@@ -184,6 +184,13 @@ public final class AppModel: ObservableObject {
         hotkeyCenter.resume()
     }
 
+    /// AppKit termination gate while the clipboard probe owns the
+    /// pasteboard: defers termination (terminateLater) until the probe
+    /// restores the snapshot, then replies `true` to continue quitting.
+    /// Returns false when no probe is active, so termination proceeds now.
+    /// A failed restore replies `false`, cancelling the quit. Only the first
+    /// registered reply is kept; a request arriving while one is pending is
+    /// answered by that existing reply.
     public func deferTerminationUntilClipboardRestored(
         _ reply: @escaping (Bool) -> Void
     ) -> Bool {

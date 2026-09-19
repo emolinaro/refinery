@@ -2,7 +2,8 @@ import AppKit
 import ApplicationServices
 
 /// Reads the current text selection from the frontmost app via the
-/// Accessibility API (AXUIElement).
+/// Accessibility API (AXUIElement), routing apps that render text without AX
+/// backing to the guarded clipboard probe in ClipboardSelectionProbe.
 enum SelectionReader {
     typealias AttributeReader = (AXUIElement, CFString) -> (AXError, CFTypeRef?)
     typealias ChildrenReader = (AXUIElement) -> (AXError, [AXUIElement]?)
@@ -12,6 +13,10 @@ enum SelectionReader {
     enum Outcome: Equatable, Sendable {
         /// Non-empty selected text read from the focused element.
         case selected(String)
+        /// Non-empty text the clipboard probe read and restored; the polished
+        /// result must replace the pasteboard only while its change count
+        /// still equals `expectedChangeCount`, so any newer copy is preserved
+        /// instead of overwritten.
         case clipboardSelection(String, expectedChangeCount: Int)
         /// The focused element resolved but carries no selection.
         case noSelection

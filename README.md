@@ -9,9 +9,11 @@ round-trip.
 
 1. Select text in any app.
 2. Press the global hotkey (default ⌥⌘P).
-3. Refinery reads the selection (Accessibility API), sends it to your
-   configured OpenAI-compatible endpoint with the chosen preset, and writes
-   the polished text to the clipboard, ready to paste over the original.
+3. Refinery reads the selection (Accessibility API, or a guarded clipboard
+   probe for apps without AX text surfaces - see Permissions), sends it to
+   your configured OpenAI-compatible endpoint with the chosen preset, and
+   writes the polished text to the clipboard, ready to paste over the
+   original.
 
 Six presets, picked from the menu-bar icon:
 
@@ -67,8 +69,10 @@ residual: in these apps, pressing the hotkey with no selection can polish the
 current line, because apps like Sublime Text copy the current line on
 Command-C with nothing selected. If the clipboard cannot be snapshotted or
 restored safely, the run stops and surfaces an error instead of silently
-losing clipboard data. Native apps such as TextEdit, Mail, and Safari stay on
-the primary AX path.
+losing clipboard data. Quitting while a probe owns the clipboard defers
+termination until restoration finishes; only Force Quit can interrupt that
+restore, and a failed restore cancels the quit. Native apps such as TextEdit,
+Mail, and Safari stay on the primary AX path.
 
 ## Settings
 
