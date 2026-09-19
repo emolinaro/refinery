@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-19
+
+### Added
+
+- OpenAI subscription auth mode: Refinery can now polish through your
+  ChatGPT account using the codex CLI's login (`codex login`). The provider
+  picker in Settings selects between the custom OpenAI-compatible endpoint
+  and "OpenAI subscription (ChatGPT login)"; none is selected by default,
+  so nothing changes for existing installs until you choose one.
+- Shared login session: Refinery reads the codex CLI's `~/.codex/auth.json`
+  read-only, refreshes the OAuth tokens through the same endpoint the CLI
+  uses when the access token is expired, and persists the refreshed tokens
+  back so the CLI and Refinery stay signed in together.
+- Subscription requests ride the same ChatGPT backend-api surface the codex
+  CLI uses (`chatgpt.com/backend-api/codex/responses`) with a
+  subscription-eligible model from the gpt-5.6 family, streaming SSE and
+  preserving the model's formatting in the polished result.
+- Settings account state for the subscription provider: signed-in email,
+  plan, and last refresh (from the login's identity claims - never token
+  material), plus a sign-out affordance that clears only Refinery's
+  reference and never the codex CLI's own login file.
+- The menu-bar dropdown now shows the active provider, or which provider
+  served the most recent polish.
+
+### Security
+
+- Tokens from the codex CLI store never appear in logs, error messages, or
+  the UI, and never leave the machine except to OpenAI's auth and
+  ChatGPT-backend endpoints. Refresh-token rotation is only attempted when
+  the access token is definitively expired, never speculatively, so a
+  running codex CLI session is never invalidated.
+
 ## [0.1.1] - 2026-09-19
 
 ### Fixed
@@ -45,5 +77,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   selected-text capture against focus changes and transient Accessibility API
   failures.
 
-[Unreleased]: https://github.com/emolinaro/refinery/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/emolinaro/refinery/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/emolinaro/refinery/compare/v0.1.1...v0.2.0
+[0.1.1]: https://github.com/emolinaro/refinery/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/emolinaro/refinery/releases/tag/v0.1.0

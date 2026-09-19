@@ -24,6 +24,18 @@ public struct MenuBarView: View {
         }
     }
 
+    /// The provider line: shows the active provider, or which provider
+    /// served the last polish.
+    private var providerLine: String? {
+        if let last = model.lastPolishProvider {
+            return "Last polish: \(last.label)"
+        }
+        if let active = model.activeProvider {
+            return "Provider: \(active.label)"
+        }
+        return nil
+    }
+
     public init(model: AppModel, onOpenSettings: @escaping () -> Void) {
         self.model = model
         self.onOpenSettings = onOpenSettings
@@ -59,6 +71,13 @@ public struct MenuBarView: View {
             }
 
             Divider()
+
+            if let providerLine {
+                Text(providerLine)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Divider()
+            }
 
             Button("Settings…") {
                 onOpenSettings()

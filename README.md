@@ -1,9 +1,9 @@
 # Refinery
 
 A native macOS menu-bar app that polishes selected text through your own
-OpenAI-compatible endpoint via a global hotkey. Select a sentence anywhere,
-press the hotkey, get the refined version on your clipboard - no browser
-round-trip.
+OpenAI-compatible endpoint or your OpenAI subscription (the codex CLI's
+ChatGPT login) via a global hotkey. Select a sentence anywhere, press the
+hotkey, get the refined version on your clipboard - no browser round-trip.
 
 ## How it works
 
@@ -11,9 +11,9 @@ round-trip.
 2. Press the global hotkey (default ⌥⌘P).
 3. Refinery reads the selection (Accessibility API, or a guarded clipboard
    probe for apps without AX text surfaces - see Permissions), sends it to
-   your configured OpenAI-compatible endpoint with the chosen preset, and
-   writes the polished text to the clipboard, ready to paste over the
-   original.
+   the selected provider (your OpenAI-compatible endpoint or your OpenAI
+   subscription) with the chosen preset, and writes the polished text to the
+   clipboard, ready to paste over the original.
 
 Six presets, picked from the menu-bar icon:
 
@@ -78,6 +78,10 @@ Mail, and Safari stay on the primary AX path.
 
 From the menu-bar icon you can configure:
 
+- **Provider** - which backend serves polish requests. **None** is the
+  default; choose **Custom OpenAI-compatible endpoint** (the v0.1.x mode) or
+  **OpenAI subscription (ChatGPT login)**. The provider picker also shows in
+  the dropdown, which reports the provider that served the last polish.
 - **Base URL** - your OpenAI-compatible endpoint. The first-run value
   `https://api.ucloud-ai.com/v1` is a private-deployment example; replace it
   with your own HTTPS endpoint. Plain HTTP is accepted only for localhost
@@ -94,6 +98,28 @@ From the menu-bar icon you can configure:
 Refinery sends `POST {baseURL}/chat/completions` and accepts the first choice
 only when its `finish_reason` is `stop`. Incomplete or malformed responses are
 not copied to the clipboard.
+
+## OpenAI subscription mode
+
+Selecting **OpenAI subscription (ChatGPT login)** as the provider rides the
+codex CLI's login, the same way quota readers do:
+
+- **Sign-in**: run `codex login` in a terminal once. Refinery reads the CLI's
+  token store (`~/.codex/auth.json`) read-only and shows the signed-in email,
+  plan, and last refresh in Settings - never the tokens themselves. Sign-out
+  in Settings clears only Refinery's reference; the codex CLI's own login
+  file is never touched.
+- **Refresh**: when the stored access token is expired, Refinery refreshes
+  through the same OAuth endpoint the codex CLI uses and persists the rotated
+  tokens back to the store, so the CLI and the app share one login session.
+  Refresh is only attempted on definitive expiry - the refresh token is
+  single-use, so a running codex session is never invalidated speculatively.
+- **Requests**: polish requests go to the ChatGPT backend-api surface the
+  codex CLI itself uses (`chatgpt.com/backend-api/codex/responses`) with the
+  account's bearer tokens and a subscription-eligible model from the gpt-5.6
+  family, streaming the response and preserving the model's formatting.
+- **Security**: tokens never appear in logs or error messages, and never
+  leave the machine except to OpenAI's auth and ChatGPT-backend endpoints.
 
 ## Development
 
