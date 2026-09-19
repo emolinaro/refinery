@@ -2212,7 +2212,12 @@ final class ClipboardSelectionProbeTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), "unattributed writer")
     }
 
-    func testCopyProbeRejectsTextMatchingThePreProbeClipboard() async {
+    func testCopyProbeAcceptsTextMatchingThePreProbeClipboard() async {
+        // The common flow: the user copies text X, then selects the same X
+        // and presses the hotkey. The probe's synthesized copy re-copies X;
+        // the fresh write (new changeCount, ownership token gone) proves the
+        // copy happened, so the equal text is a valid selection - it must
+        // not read as "no selection".
         let context = clipboardContext()
         let pasteboard = NSPasteboard(name: .init("RefineryTests.\(UUID().uuidString)"))
         pasteboard.clearContents()
@@ -2236,11 +2241,16 @@ final class ClipboardSelectionProbeTests: XCTestCase {
             }
         )
 
-        XCTAssertEqual(outcome, .noSelection)
+        guard case .clipboardSelection(let text, _) = outcome else {
+            return XCTFail("Expected the equal-to-snapshot copy to read as a selection")
+        }
+        XCTAssertEqual(text, "same text")
         XCTAssertEqual(pasteboard.string(forType: .string), "same text")
     }
 
-    func testCopyProbeRejectsCombinedTextMatchingMultiplePreProbeItems() async {
+    func testCopyProbeAcceptsCombinedTextMatchingMultiplePreProbeItems() async {
+        // Same as the single-item case: a fresh write whose combined string
+        // view equals the pre-probe multi-item view is a valid selection.
         let context = clipboardContext()
         let first = NSPasteboardItem()
         first.setString("one", forType: .string)
@@ -2272,7 +2282,10 @@ final class ClipboardSelectionProbeTests: XCTestCase {
             }
         )
 
-        XCTAssertEqual(outcome, .noSelection)
+        guard case .clipboardSelection(let text, _) = outcome else {
+            return XCTFail("Expected the combined equal-to-snapshot copy to read as a selection")
+        }
+        XCTAssertEqual(text, "one\ntwo")
         XCTAssertEqual(pasteboard.string(forType: .string), "one\ntwo")
     }
 
@@ -2487,7 +2500,14 @@ final class ClipboardSelectionProbeTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), "newer clipboard")
     }
 
-    func testCopyProbePreservesDelayedWriteAfterRestoration() async {
+    func testCopyProbeAcceptsSelectionWhenClipboardAlreadyHeldTheSameText() async {
+        // The captain's live case: the user copies text X in Sublime, then
+        // selects the same X and presses the hotkey. The probe's fresh copy
+        // write equals the pre-probe snapshot; it must be accepted as the
+        // selection, not read as "no selection". A newer write landing
+        // after the probe's lease is preserved by the pipeline's guarded
+        // final write (ifUnchangedSince), covered separately by
+        // testFallbackPreservesCopyMadeWhileEndpointRequestIsRunning.
         let context = clipboardContext()
         let pasteboard = NSPasteboard(name: .init("RefineryTests.\(UUID().uuidString)"))
         pasteboard.clearContents()
@@ -2507,17 +2527,16 @@ final class ClipboardSelectionProbeTests: XCTestCase {
                 if waitCount == 1 {
                     _ = pasteboard.clearContents()
                     XCTAssertTrue(pasteboard.setString("original", forType: .string))
-                } else if waitCount == 2 {
-                    _ = pasteboard.clearContents()
-                    XCTAssertTrue(pasteboard.setString("newer user copy", forType: .string))
                 }
             }
         )
 
-        XCTAssertEqual(outcome, .clipboardFailure(.clipboardChanged))
-        XCTAssertEqual(pasteboard.string(forType: .string), "newer user copy")
+        guard case .clipboardSelection(let text, _) = outcome else {
+            return XCTFail("Expected the same-as-snapshot copy to be accepted as a selection")
+        }
+        XCTAssertEqual(text, "original")
+        XCTAssertEqual(pasteboard.string(forType: .string), "original")
     }
-
     func testCopyProbePreservesWriterThatReplacesOwnershipMarker() async {
         let context = clipboardContext()
         let original = NSPasteboardItem()
