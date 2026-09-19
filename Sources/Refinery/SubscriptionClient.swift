@@ -76,7 +76,7 @@ struct SubscriptionClient {
         model: String = SubscriptionClient.defaultModel,
         timeout: TimeInterval = 60,
         transport: @escaping Transport = { request in
-            try await SubscriptionClient.defaultTransport(request, timeout: 60)
+            try await SubscriptionClient.defaultTransport(request)
         }
     ) {
         self.baseURL = baseURL
@@ -208,13 +208,13 @@ struct SubscriptionClient {
         return try Self.parseSSE(from: data)
     }
 
-    static func defaultTransport(
-        _ request: URLRequest,
-        timeout: TimeInterval
-    ) async throws -> (Data, HTTPURLResponse) {
+    /// The live transport: an ephemeral URLSession streaming the SSE body.
+    /// Session timeouts follow the request's own `timeoutInterval`, the
+    /// same pattern as `EndpointClient`.
+    static func defaultTransport(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = timeout
-        configuration.timeoutIntervalForResource = timeout
+        configuration.timeoutIntervalForRequest = request.timeoutInterval
+        configuration.timeoutIntervalForResource = request.timeoutInterval
         let session = URLSession(configuration: configuration)
         defer { session.invalidateAndCancel() }
         let (bytes, response) = try await session.bytes(for: request)

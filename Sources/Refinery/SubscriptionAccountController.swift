@@ -62,16 +62,6 @@ final class SubscriptionAccountController: ObservableObject {
                 "Refinery is signed out of the OpenAI subscription. Sign in from Settings."
             )
         }
-        let session = self.detachedSession
-        return try await withThrowingTaskGroup(of: ChatGPTSession.Credential.self) { group in
-            group.addTask {
-                try await session.validCredential().credential
-            }
-            guard let result = try await group.next() else {
-                throw SubscriptionError.session("No OpenAI subscription credential is available.")
-            }
-            group.cancelAll()
-            return result
-        }
+        return try await detachedSession.validCredential().credential
     }
 }

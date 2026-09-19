@@ -40,7 +40,6 @@ public final class AppModel: ObservableObject {
 
     /// The provider that served the most recent polish, for the dropdown.
     @Published private(set) var lastPolishProvider: ProviderSelection?
-
     private enum APIKeySnapshot: Sendable {
         case available(String)
         case missing
@@ -48,6 +47,7 @@ public final class AppModel: ObservableObject {
     }
 
     private struct RequestConfiguration: Sendable {
+        let provider: ProviderSelection
         let baseURL: URL?
         let model: String
         let preset: Preset
@@ -99,9 +99,7 @@ public final class AppModel: ObservableObject {
             )
         },
         readAPIKey: @escaping (URL) throws -> String? = { try KeychainStore.readAPIKey(for: $0) },
-        fetchSubscriptionCredential: @Sendable @escaping () async throws -> ChatGPTSession.Credential = {
-            try await ChatGPTSession().validCredential().credential
-        },
+        fetchSubscriptionCredential: (@Sendable () async throws -> ChatGPTSession.Credential)? = nil,
         polish: @escaping @Sendable (
             URL,
             String,
@@ -141,11 +139,12 @@ public final class AppModel: ObservableObject {
         self.readSelection = readSelection
         self.probeClipboardSelection = probeClipboardSelection
         self.readAPIKey = readAPIKey
+        self.accountController = SubscriptionAccountController()
         self.fetchSubscriptionCredential = fetchSubscriptionCredential
+            ?? { [accountController] in try await accountController.credential() }
         self.polish = polish
         self.polishViaSubscription = polishViaSubscription
         self.writeClipboard = writeClipboard
-        self.accountController = SubscriptionAccountController()
         applyHotkey()
     }
     // MARK: Settings
@@ -312,6 +311,7 @@ public final class AppModel: ObservableObject {
             apiKey = nil
         }
         let configuration = RequestConfiguration(
+            provider: requestProvider,
             baseURL: requestBaseURL,
             model: requestModel,
             preset: requestPreset,
@@ -426,8 +426,11 @@ public final class AppModel: ObservableObject {
             return
         }
 
-        // Provider gate: nothing runs when no provider is selected.
-        guard settings.provider != .none else {
+        // Provider gate: nothing runs when no provider is selected. The
+        // provider was captured at hotkey time, so a mid-flight settings
+        // change never mixes credential state from one provider with the
+        // routing of another.
+        guard configuration.provider != .none else {
             lastOutcome = .failure(PolishService.configurationMessage(for: settings))
             isRunning = false
             return
@@ -436,7 +439,7 @@ public final class AppModel: ObservableObject {
         // Endpoint credentials only gate the endpoint provider; the
         // subscription provider carries its own credential.
         var key: String?
-        if settings.provider == .openAICompatibleEndpoint {
+        if configuration.provider == .openAICompatibleEndpoint {
             guard let url = configuration.baseURL, EndpointClient.isAllowedBaseURL(url) else {
                 lastOutcome = .failure(EndpointError.invalidBaseURL.localizedDescription)
                 isRunning = false
@@ -477,11 +480,10 @@ public final class AppModel: ObservableObject {
         let custom = customPrompt
         let apiKey = key
         let expectedChangeCount = expectedClipboardChangeCount
-        let requestProvider = settings.provider
         Task { @MainActor in
             do {
                 let result: String
-                switch requestProvider {
+                switch configuration.provider {
                 case .openAISubscription:
                     guard let credential = configuration.subscriptionCredential else {
                         throw SubscriptionError.session(
@@ -510,7 +512,7 @@ public final class AppModel: ObservableObject {
                 case .none:
                     throw EndpointError.invalidBaseURL
                 }
-                lastPolishProvider = requestProvider
+                lastPolishProvider = configuration.provider
                 switch writeClipboard(result, expectedChangeCount) {
                 case .success:
                     break

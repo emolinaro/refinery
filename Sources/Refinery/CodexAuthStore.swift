@@ -84,32 +84,21 @@ struct CodexAuthStore: Sendable {
     /// Bound limit on the auth file: the real file is a few kilobytes.
     static let maximumFileBytes = 64 * 1024
 
-    /// Non-secret account state derived from the id_token claims.
-    struct AccountState: Equatable, Sendable {
-        var email: String?
-        var planType: String?
-        var lastRefresh: Date?
-    }
-
     typealias FileReader = @Sendable (URL) throws -> Data
     typealias FileWriter = @Sendable (URL, Data) throws -> Void
-    typealias FilePresence = @Sendable (URL) -> Bool
 
     let fileURL: URL
     let read: FileReader
     let write: FileWriter
-    let exists: FilePresence
 
     init(
         fileURL: URL? = nil,
         read: @escaping FileReader = CodexAuthStore.defaultRead,
-        write: @escaping FileWriter = CodexAuthStore.defaultWrite,
-        exists: @escaping FilePresence = CodexAuthStore.defaultExists
+        write: @escaping FileWriter = CodexAuthStore.defaultWrite
     ) {
         self.fileURL = fileURL ?? CodexAuthStore.defaultFileURL()
         self.read = read
         self.write = write
-        self.exists = exists
     }
 
     static func defaultFileURL() -> URL {
@@ -126,10 +115,6 @@ struct CodexAuthStore: Sendable {
 
     private static func defaultWrite(_ url: URL, _ data: Data) throws {
         try data.write(to: url, options: [.atomic])
-    }
-
-    private static func defaultExists(_ url: URL) -> Bool {
-        FileManager.default.fileExists(atPath: url.path)
     }
 
     /// Reads the raw parsed store; throws a `CodexAuthStoreError` on any

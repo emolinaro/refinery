@@ -39,6 +39,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the access token is definitively expired, never speculatively, so a
   running codex CLI session is never invalidated.
 
+### Fixed
+
+- The in-app Sign Out button now actually gates polishing: the hotkey's
+  credential fetch routes through the account controller, so a sign-out
+  blocks subscription polish even though the codex CLI's own login remains
+  on disk.
+- The provider is captured when the hotkey fires: switching the provider in
+  Settings while a polish is in flight no longer misroutes the request to
+  a provider whose credentials were never gathered.
+- Removed dead scaffolding introduced with the subscription mode: an unused
+  parallel routing method in PolishService, an unused account-state struct
+  and file-presence hook in CodexAuthStore, and an unused clock parameter
+  plus no-op URLSession wrapper in OAuthTokenRefresher.
+- The subscription client's default transport now derives its URLSession
+  timeouts from the request itself, matching the endpoint client's
+  established pattern.
+
 ## [0.1.1] - 2026-09-19
 
 ### Fixed

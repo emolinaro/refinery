@@ -1388,6 +1388,102 @@ final class AppModelHotkeyTests: XCTestCase {
         XCTAssertTrue(message.contains("signed in"), "message was: \(message)")
     }
 
+    func testDefaultCredentialFetchHonorsInAppSignOutGate() async throws {
+        _ = NSApplication.shared
+        // No fetchSubscriptionCredential injected: this is exactly the
+        // production wiring, which must route through the account
+        // controller's sign-out gate rather than reading auth.json
+        // directly.
+        let selectionContext = makeSelectionContext(
+            processIdentifier: 101,
+            selection: .selected("subscription text")
+        )
+        let model = AppModel(
+            settings: AppSettings(
+                provider: .openAISubscription,
+                baseURL: "",
+                model: ""
+            ),
+            hotkeyCenter: StubHotkeyManager(registrationResults: [true]),
+            accessibilityEnabled: { true },
+            frontmostApplicationPID: { 101 },
+            captureSelection: { _ in .accessibility(selectionContext) },
+            readSelection: { _ in .selected("subscription text") },
+            polishViaSubscription: { _, _, _, _ in
+                XCTFail("polish must not run once signed out in-app")
+                return ""
+            }
+        )
+
+        model.subscriptionAccount.signOut()
+        XCTAssertTrue(model.subscriptionAccount.loginExistsOnDisk)
+
+        model.handleHotkey()
+
+        for _ in 0..<100 where model.isRunning {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        guard case .failure(let message) = model.lastOutcome else {
+            return XCTFail("expected the sign-out gate failure, got \(String(describing: model.lastOutcome))")
+        }
+        XCTAssertTrue(message.contains("signed out"), "message was: \(message)")
+    }
+
+    func testMidFlightProviderSwitchKeepsHotkeyTimeRouting() async throws {
+        _ = NSApplication.shared
+        // The provider is captured when the hotkey fires; switching the
+        // picker mid-flight must not reroute the in-flight request to a
+        // provider whose credentials were never gathered.
+        let selectionContext = makeSelectionContext(
+            processIdentifier: 101,
+            selection: .selected("subscription text")
+        )
+        let credential = ChatGPTSession.Credential(accessToken: "sub-access", accountID: "acct-1")
+        let endpointPolishRan = LockedBox(false)
+        // Late-bound model reference so the polish closure can flip the
+        // persisted provider after construction.
+        let modelBox = LockedBox<AppModel?>(nil)
+        let model = AppModel(
+            settings: AppSettings(
+                provider: .openAISubscription,
+                baseURL: "https://api.example.com/v1",
+                model: "unused-model"
+            ),
+            hotkeyCenter: StubHotkeyManager(registrationResults: [true]),
+            accessibilityEnabled: { true },
+            frontmostApplicationPID: { 101 },
+            captureSelection: { _ in .accessibility(selectionContext) },
+            readSelection: { _ in .selected("subscription text") },
+            fetchSubscriptionCredential: { credential },
+            polish: { _, _, _, _, _, _ in
+                endpointPolishRan.set(true)
+                return "wrong provider"
+            },
+            polishViaSubscription: { text, _, _, credential in
+                // Switch the persisted provider while the request is in
+                // flight, after the hotkey-time capture.
+                let model = modelBox.get()
+                await MainActor.run {
+                    model?.update { $0.provider = .openAICompatibleEndpoint }
+                }
+                XCTAssertEqual(text, "subscription text")
+                XCTAssertEqual(credential.accessToken, "sub-access")
+                return "polished via subscription"
+            },
+            writeClipboard: { _, _ in .success(()) }
+        )
+        modelBox.set(model)
+
+        model.handleHotkey()
+
+        for _ in 0..<100 where model.isRunning {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertFalse(endpointPolishRan.get(), "mid-flight switch must not reroute to the endpoint provider")
+        XCTAssertEqual(model.lastOutcome, .polished)
+        XCTAssertEqual(model.lastPolishProvider, .openAISubscription)
+    }
+
     func testAXCaptureNeverInvokesClipboardProbe() async throws {
         _ = NSApplication.shared
         let selectionContext = makeSelectionContext(

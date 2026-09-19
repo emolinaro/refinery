@@ -26,41 +26,6 @@ struct PolishService: Sendable {
         return URL(string: trimmed)
     }
 
-    /// Runs a polish request against the selected provider.
-    /// - Parameters:
-    ///   - text: the captured selection.
-    ///   - preset: the chosen preset.
-    ///   - customPrompt: the typed instruction, only for `.customOneOff`.
-    ///   - endpointAPIKey: the Keychain API key (endpoint provider only).
-    ///   - subscriptionCredential: the ChatGPT bearer credential
-    ///     (subscription provider only).
-    func polish(
-        _ text: String,
-        preset: Preset,
-        customPrompt: String?,
-        endpointAPIKey: String?,
-        subscriptionCredential: ChatGPTSession.Credential?
-    ) async throws -> String {
-        switch settings.provider {
-        case .none:
-            throw EndpointError.invalidBaseURL
-        case .openAICompatibleEndpoint:
-            let client = EndpointClient(baseURL: baseURL!, model: settings.model)
-            return try await client.polish(text, preset: preset, customPrompt: customPrompt, apiKey: endpointAPIKey ?? "")
-        case .openAISubscription:
-            guard let subscriptionCredential else {
-                throw SubscriptionError.session("No OpenAI subscription credential is available.")
-            }
-            let client = SubscriptionClient()
-            return try await client.polish(
-                text,
-                preset: preset,
-                customPrompt: customPrompt,
-                credential: subscriptionCredential
-            )
-        }
-    }
-
     /// The failure message for an unusable provider, matching the Settings
     /// and dropdown copy.
     static func configurationMessage(for settings: AppSettings) -> String {

@@ -76,7 +76,7 @@ struct OAuthTokenRefresher: Sendable {
             delegateQueue: nil
         )
         defer { session.invalidateAndCancel() }
-        let (data, response) = try await session.synchronousData(request)
+        let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw RefreshError.network("not an HTTP response")
         }
@@ -85,10 +85,7 @@ struct OAuthTokenRefresher: Sendable {
 
     /// Performs the refresh-token exchange. The refresh token is single-use:
     /// the caller must persist the result (which rotates it) or not call this.
-    func refresh(
-        refreshToken: String,
-        now: @escaping () -> Date = { Date() }
-    ) async throws -> RefreshedTokens {
+    func refresh(refreshToken: String) async throws -> RefreshedTokens {
         var request = URLRequest(url: Self.tokenEndpoint)
         request.httpMethod = "POST"
         request.timeoutInterval = timeout
@@ -147,13 +144,5 @@ struct OAuthTokenRefresher: Sendable {
             refreshToken: newRefreshToken,
             expiresInSeconds: expiresIn
         )
-    }
-}
-
-private extension URLSession {
-    /// `URLSession.data(for:)` without following redirects (the delegate
-    /// above already rejects them; this keeps the response as-is).
-    func synchronousData(_ request: URLRequest) async throws -> (Data, URLResponse) {
-        try await self.data(for: request)
     }
 }

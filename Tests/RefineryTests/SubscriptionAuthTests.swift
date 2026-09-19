@@ -224,8 +224,7 @@ final class CodexAuthStoreTests: XCTestCase {
         let unwritable = CodexAuthStore(
             fileURL: fileURL,
             read: { url in try Data(contentsOf: url) },
-            write: { _, _ in throw CocoaError(.fileWriteUnknown) },
-            exists: { _ in true }
+            write: { _, _ in throw CocoaError(.fileWriteUnknown) }
         )
         var file = try store.loadChatGPTTokens()
         file.tokens?.accessToken = "rotated"
