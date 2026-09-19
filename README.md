@@ -82,11 +82,11 @@ From the menu-bar icon you can configure:
   default; choose **Custom OpenAI-compatible endpoint** (the v0.1.x mode) or
   **OpenAI subscription (ChatGPT login)**. The provider picker also shows in
   the dropdown, which reports the provider that served the last polish.
-- **Base URL** - your OpenAI-compatible endpoint. The first-run value
-  `https://api.ucloud-ai.com/v1` is a private-deployment example; replace it
-  with your own HTTPS endpoint. Plain HTTP is accepted only for localhost
-- **Model** - model name sent to chat completions. The first-run value
-  `ucloud-ai` matches that private-deployment example; replace it as needed
+- **Base URL** - your OpenAI-compatible endpoint. The field starts blank
+  and shows a placeholder host pattern; enter your own HTTPS endpoint. Plain
+  HTTP is accepted only for localhost
+- **Model** - model name sent to chat completions. The field starts blank;
+  enter the model name your endpoint serves
 - **API Key** - stored only in the macOS Keychain, never in plain files, and
   kept separately for each endpoint URL
 - **Hotkey** - record a ⌘/⌥/⌃-based combination, except common Command

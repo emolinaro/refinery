@@ -19,8 +19,12 @@ public struct MenuBarView: View {
             Text("No text selected")
         case .hotkeyRegistrationFailure:
             Text("Could not register hotkey; it may be in use by another app.")
+        case .accessibilityPermissionNeeded(let message):
+            Text(message)
+                .fixedSize(horizontal: false, vertical: true)
         case .failure(let message):
             Text(message)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -46,7 +50,6 @@ public struct MenuBarView: View {
             statusLine
                 .font(.callout)
                 .foregroundStyle(.secondary)
-                .lineLimit(2)
 
             if model.isRunning {
                 HStack(spacing: 6) {

@@ -54,7 +54,7 @@ public struct SettingsView: View {
                     .font(.headline)
 
                 LabeledContent {
-                    TextField("https://api.ucloud-ai.com/v1", text: $draftBaseURL)
+                    TextField("https://your-endpoint.example.com/v1", text: $draftBaseURL)
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 200)
                 } label: {
@@ -62,7 +62,7 @@ public struct SettingsView: View {
                 }
 
                 LabeledContent {
-                    TextField("ucloud-ai", text: $draftModel)
+                    TextField("model-name", text: $draftModel)
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 200)
                 } label: {
@@ -115,7 +115,14 @@ public struct SettingsView: View {
                     Button(recordingHotkey ? "Press keys…" : "Record") {
                         recordingHotkey = true
                         model.suspendHotkey()
-                        HotkeyRecorder.start { keyCode, modifiers, display in
+                        HotkeyRecorder.start(
+                            requestAccess: { [model] in
+                                guard !model.accessibilityIsEnabled() else { return true }
+                                _ = model.handleMissingAccessibilityPermission()
+                                return false
+                            },
+                            tapFactory: RecordingSession.makeTap
+                        ) { keyCode, modifiers, display in
                             defer { model.resumeHotkey() }
                             recordingHotkey = false
                             if let keyCode, let modifiers {
