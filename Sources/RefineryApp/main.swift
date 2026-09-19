@@ -52,6 +52,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
         }
     }
 
+    func applicationShouldTerminate(
+        _ sender: NSApplication
+    ) -> NSApplication.TerminateReply {
+        // Force Quit can interrupt restoration because clipboard contents are never persisted.
+        guard model.deferTerminationUntilClipboardRestored({ shouldTerminate in
+            sender.reply(toApplicationShouldTerminate: shouldTerminate)
+        }) else {
+            return .terminateNow
+        }
+        return .terminateLater
+    }
+
     // MARK: NSMenuDelegate
 
     func menuDidClose(_ menu: NSMenu) {

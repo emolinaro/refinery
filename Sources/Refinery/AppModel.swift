@@ -11,6 +11,7 @@ public final class AppModel: ObservableObject {
     @Published var lastOutcome: Outcome?
     @Published var isRunning = false
     @Published private(set) var settingsAreReadable: Bool
+    @Published private(set) var isFinishingClipboardRestore = false
 
     enum Outcome: Equatable {
         case polished
@@ -24,11 +25,17 @@ public final class AppModel: ObservableObject {
     private let accessibilityEnabled: () -> Bool
     private let accessibilityPrompt: () -> Void
     private let frontmostApplicationPID: () -> pid_t?
-    private let captureSelectionContext: (pid_t) -> SelectionReader.Context?
+    private let captureSelection: (pid_t) -> SelectionReader.Capture
     private let readSelection: @Sendable (SelectionReader.Context) -> SelectionReader.Outcome
+    private let probeClipboardSelection: @MainActor @Sendable (
+        SelectionReader.ClipboardContext,
+        ClipboardSelectionProbe.OwnershipHandler
+    ) async -> SelectionReader.Outcome
     private let readAPIKey: (URL) throws -> String?
     private let polish: @Sendable (URL, String, String, Preset, String?, String) async throws -> String
-    private let writeClipboard: (String) -> Result<Void, ClipboardError>
+    private let writeClipboard: (String, Int?) -> Result<Void, ClipboardError>
+    private var isClipboardOwnershipActive = false
+    private var pendingTerminationReply: ((Bool) -> Void)?
 
     private enum APIKeySnapshot: Sendable {
         case available(String)
@@ -73,11 +80,18 @@ public final class AppModel: ObservableObject {
         accessibilityEnabled: @escaping () -> Bool = SelectionReader.isAccessibilityEnabled,
         accessibilityPrompt: @escaping () -> Void = SelectionReader.promptForAccessibility,
         frontmostApplicationPID: @escaping () -> pid_t? = SelectionReader.frontmostApplicationPID,
-        captureSelectionContext: @escaping (pid_t) -> SelectionReader.Context? = {
-            SelectionReader.captureContext(for: $0)
-        },
+        captureSelection: @escaping (pid_t) -> SelectionReader.Capture = SelectionReader.capture,
         readSelection: @escaping @Sendable (SelectionReader.Context) -> SelectionReader.Outcome = {
             SelectionReader.readSelection(from: $0)
+        },
+        probeClipboardSelection: @escaping @MainActor @Sendable (
+            SelectionReader.ClipboardContext,
+            ClipboardSelectionProbe.OwnershipHandler
+        ) async -> SelectionReader.Outcome = {
+            await ClipboardSelectionProbe.read(
+                for: $0,
+                ownershipChanged: $1
+            )
         },
         readAPIKey: @escaping (URL) throws -> String? = { try KeychainStore.readAPIKey(for: $0) },
         polish: @escaping @Sendable (
@@ -91,8 +105,12 @@ public final class AppModel: ObservableObject {
             let client = EndpointClient(baseURL: baseURL, model: model)
             return try await client.polish(text, preset: preset, customPrompt: custom, apiKey: key)
         },
-        writeClipboard: @escaping (String) -> Result<Void, ClipboardError> = {
-            ClipboardStore.writeResult($0, to: NSPasteboard.general)
+        writeClipboard: @escaping (String, Int?) -> Result<Void, ClipboardError> = {
+            ClipboardStore.writeResult(
+                $0,
+                to: NSPasteboard.general,
+                ifUnchangedSince: $1
+            )
         }
     ) {
         self.settings = settings
@@ -102,8 +120,9 @@ public final class AppModel: ObservableObject {
         self.accessibilityEnabled = accessibilityEnabled
         self.accessibilityPrompt = accessibilityPrompt
         self.frontmostApplicationPID = frontmostApplicationPID
-        self.captureSelectionContext = captureSelectionContext
+        self.captureSelection = captureSelection
         self.readSelection = readSelection
+        self.probeClipboardSelection = probeClipboardSelection
         self.readAPIKey = readAPIKey
         self.polish = polish
         self.writeClipboard = writeClipboard
@@ -165,6 +184,24 @@ public final class AppModel: ObservableObject {
         hotkeyCenter.resume()
     }
 
+    /// AppKit termination gate while the clipboard probe owns the
+    /// pasteboard: defers termination (terminateLater) until the probe
+    /// restores the snapshot, then replies `true` to continue quitting.
+    /// Returns false when no probe is active, so termination proceeds now.
+    /// A failed restore replies `false`, cancelling the quit. Only the first
+    /// registered reply is kept; a request arriving while one is pending is
+    /// answered by that existing reply.
+    public func deferTerminationUntilClipboardRestored(
+        _ reply: @escaping (Bool) -> Void
+    ) -> Bool {
+        guard isClipboardOwnershipActive else { return false }
+        if pendingTerminationReply == nil {
+            pendingTerminationReply = reply
+        }
+        isFinishingClipboardRestore = true
+        return true
+    }
+
     /// Registers a newly recorded hotkey, keeping the previous registration
     /// and persisted settings when the new combination cannot be registered.
     @discardableResult
@@ -211,7 +248,8 @@ public final class AppModel: ObservableObject {
             return
         }
 
-        guard let selectionContext = captureSelectionContext(processIdentifier) else {
+        let selectionCapture = captureSelection(processIdentifier)
+        if case .unavailable = selectionCapture {
             lastOutcome = .failure(
                 "Could not read the selection from the frontmost app. Try again in a moment."
             )
@@ -241,11 +279,43 @@ public final class AppModel: ObservableObject {
 
         isRunning = true
         let readSelection = self.readSelection
+        let probeClipboardSelection = self.probeClipboardSelection
         Task { [weak self] in
-            let selection = await Task.detached(priority: .userInitiated) {
-                readSelection(selectionContext)
-            }.value
+            let selection: SelectionReader.Outcome
+            switch selectionCapture {
+            case .accessibility(let context):
+                selection = await Task.detached(priority: .userInitiated) {
+                    readSelection(context)
+                }.value
+            case .clipboardProbe(let context):
+                selection = await probeClipboardSelection(context) { [weak self] event in
+                    self?.handleClipboardOwnership(event)
+                }
+            case .unavailable:
+                selection = .unreadable
+            }
             self?.handle(selection: selection, configuration: configuration)
+        }
+    }
+
+    private func handleClipboardOwnership(
+        _ event: ClipboardSelectionProbe.OwnershipEvent
+    ) {
+        switch event {
+        case .began:
+            isClipboardOwnershipActive = true
+        case .endedSafely:
+            isClipboardOwnershipActive = false
+            isFinishingClipboardRestore = false
+            let reply = pendingTerminationReply
+            pendingTerminationReply = nil
+            reply?(true)
+        case .restorationFailed:
+            isClipboardOwnershipActive = false
+            isFinishingClipboardRestore = false
+            let reply = pendingTerminationReply
+            pendingTerminationReply = nil
+            reply?(false)
         }
     }
 
@@ -254,9 +324,14 @@ public final class AppModel: ObservableObject {
         configuration: RequestConfiguration
     ) {
         let selected: String
+        let expectedClipboardChangeCount: Int?
         switch selection {
         case .selected(let text):
             selected = text
+            expectedClipboardChangeCount = nil
+        case .clipboardSelection(let text, let expectedChangeCount):
+            selected = text
+            expectedClipboardChangeCount = expectedChangeCount
         case .noSelection:
             lastOutcome = .emptySelection
             isRunning = false
@@ -265,6 +340,10 @@ public final class AppModel: ObservableObject {
             lastOutcome = .failure(
                 "Could not read the selection from the frontmost app. Try again in a moment."
             )
+            isRunning = false
+            return
+        case .clipboardFailure(let error):
+            lastOutcome = .failure(error.localizedDescription)
             isRunning = false
             return
         }
@@ -313,6 +392,7 @@ public final class AppModel: ObservableObject {
         let selectedText = selected
         let custom = customPrompt
         let apiKey = key
+        let expectedChangeCount = expectedClipboardChangeCount
         Task { @MainActor in
             do {
                 let result = try await polish(
@@ -323,7 +403,7 @@ public final class AppModel: ObservableObject {
                     custom,
                     apiKey
                 )
-                switch writeClipboard(result) {
+                switch writeClipboard(result, expectedChangeCount) {
                 case .success:
                     break
                 case .failure(let error):

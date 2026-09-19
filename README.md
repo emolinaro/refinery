@@ -9,9 +9,11 @@ round-trip.
 
 1. Select text in any app.
 2. Press the global hotkey (default ⌥⌘P).
-3. Refinery reads the selection (Accessibility API), sends it to your
-   configured OpenAI-compatible endpoint with the chosen preset, and writes
-   the polished text to the clipboard, ready to paste over the original.
+3. Refinery reads the selection (Accessibility API, or a guarded clipboard
+   probe for apps without AX text surfaces - see Permissions), sends it to
+   your configured OpenAI-compatible endpoint with the chosen preset, and
+   writes the polished text to the clipboard, ready to paste over the
+   original.
 
 Six presets, picked from the menu-bar icon:
 
@@ -54,6 +56,23 @@ apps and record a global hotkey. On first use the app surfaces this and macOS
 shows its standard permission prompt: grant Refinery (or your terminal, when
 running from one) access under System Settings -> Privacy & Security ->
 Accessibility.
+
+Refinery reads native Accessibility-backed text controls directly. When the
+focused app exposes no AX text surface at all (its menu bar aside), as with
+Sublime Text's custom editor rendering, Refinery falls back to a guarded copy
+probe: it snapshots every current pasteboard representation, synthesizes
+Command-C, reads the copied text, and restores the snapshot before making any
+endpoint request. macOS exposes no pasteboard writer identity, so in such apps
+the non-empty clipboard read plus the tightly focused acceptance window is the
+strongest available verification that selected text was copied. One accepted
+residual: in these apps, pressing the hotkey with no selection can polish the
+current line, because apps like Sublime Text copy the current line on
+Command-C with nothing selected. If the clipboard cannot be snapshotted or
+restored safely, the run stops and surfaces an error instead of silently
+losing clipboard data. Quitting while a probe owns the clipboard defers
+termination until restoration finishes; only Force Quit can interrupt that
+restore, and a failed restore cancels the quit. Native apps such as TextEdit,
+Mail, and Safari stay on the primary AX path.
 
 ## Settings
 
