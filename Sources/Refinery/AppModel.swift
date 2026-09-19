@@ -11,7 +11,6 @@ public final class AppModel: ObservableObject {
     @Published var lastOutcome: Outcome?
     @Published var isRunning = false
     @Published private(set) var settingsAreReadable: Bool
-    @Published private(set) var isFinishingClipboardRestore = false
 
     enum Outcome: Equatable {
         case polished
@@ -195,10 +194,8 @@ public final class AppModel: ObservableObject {
         _ reply: @escaping (Bool) -> Void
     ) -> Bool {
         guard isClipboardOwnershipActive else { return false }
-        if pendingTerminationReply == nil {
-            pendingTerminationReply = reply
-        }
-        isFinishingClipboardRestore = true
+        guard pendingTerminationReply == nil else { return true }
+        pendingTerminationReply = reply
         return true
     }
 
@@ -306,13 +303,11 @@ public final class AppModel: ObservableObject {
             isClipboardOwnershipActive = true
         case .endedSafely:
             isClipboardOwnershipActive = false
-            isFinishingClipboardRestore = false
             let reply = pendingTerminationReply
             pendingTerminationReply = nil
             reply?(true)
         case .restorationFailed:
             isClipboardOwnershipActive = false
-            isFinishingClipboardRestore = false
             let reply = pendingTerminationReply
             pendingTerminationReply = nil
             reply?(false)
