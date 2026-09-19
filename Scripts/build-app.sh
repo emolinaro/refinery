@@ -50,8 +50,21 @@ cat > "$STAGING_APP/Contents/Info.plist" <<'PLIST'
 PLIST
 
 lipo "$STAGING_APP/Contents/MacOS/Refinery" -verify_arch arm64
-codesign --force --sign - "$STAGING_APP"
+# Prefer a stable local codesigning identity ("Refinery Dev" in the login
+# keychain) over ad-hoc signing: macOS keys the Accessibility permission on
+# the code signature, and an ad-hoc signature changes with every rebuild,
+# silently invalidating the permission each time. A stable self-signed
+# identity keeps the grant valid across rebuilds.
+SIGN_IDENTITY="-"
+if security find-identity -v -p codesigning 2>/dev/null | grep -q '"Refinery Dev"'; then
+    SIGN_IDENTITY="Refinery Dev"
+fi
+codesign --force --sign "$SIGN_IDENTITY" --identifier com.emolinaro.refinery "$STAGING_APP"
 rm -rf "$APP"
 mv "$STAGING_APP" "$APP"
 
-echo "built: $APP (arm64, ad-hoc signed)"
+if [ "$SIGN_IDENTITY" = "-" ]; then
+    echo "built: $APP (arm64, ad-hoc signed)"
+else
+    echo "built: $APP (arm64, signed with $SIGN_IDENTITY)"
+fi
