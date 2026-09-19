@@ -29,6 +29,15 @@ When updating this file, preserve this bar for all agents and keep entries conci
   Routing lives in `PolishService` + `AppModel.handle`. The endpoint path
   (v0.1.x) and the subscription path are siblings; keep the endpoint path
   untouched when changing the subscription provider.
+- Accessibility: the system permission prompt (System Settings opening)
+  must fire at most once per app launch. `AppModel.handleMissingAccessibilityPermission()`
+  is the single gate; both the hotkey guard and hotkey recording route
+  through it. Never call `SelectionReader.promptForAccessibility()`
+  directly from other call sites, and never pass
+  `AXTrustedCheckOptionPrompt: true` outside the gate - macOS keys the
+  Accessibility grant on the code signature, and ad-hoc signing rotates it
+  every rebuild, so a fresh binary silently drops the grant (the app detects
+  this via the persisted granted-once marker and explains the re-toggle).
 - Subscription mode rides the codex CLI's ChatGPT login: `CodexAuthStore`
   reads `~/.codex/auth.json` (read-only discipline, writes only to persist
   OAuth rotation), `ChatGPTSession` gates refresh on definitive expiry

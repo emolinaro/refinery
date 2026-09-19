@@ -11,15 +11,12 @@ enum HotkeyRecorder {
     static var currentSession: RecordingSession?
 
     /// Runs a recording session on the main thread.
+    /// - Parameter requestAccess: checked before the event tap is created;
+    ///   callers own the prompting policy, so the app routes this through
+    ///   AppModel's shared once-per-launch gate instead of firing the
+    ///   system prompt here.
     /// - Parameter completion: called with (keyCode, modifiers, displayString)
     ///   on success, or (nil, nil, reason) on failure or cancellation.
-    static func start(completion: @escaping (UInt32?, UInt32?, String) -> Void) {
-        currentSession?.invalidate()
-        let session = RecordingSession(completion: completion)
-        currentSession = session
-        session.start()
-    }
-
     static func start(
         requestAccess: @escaping () -> Bool,
         tapFactory: @escaping RecordingSession.TapFactory,
@@ -33,6 +30,17 @@ enum HotkeyRecorder {
         )
         currentSession = session
         session.start()
+    }
+
+    /// The default access check for recording: verifies the grant without
+    /// prompting. The system prompt belongs to AppModel's shared
+    /// once-per-launch gate; the caller decides how a miss is surfaced.
+    static func start(completion: @escaping (UInt32?, UInt32?, String) -> Void) {
+        start(
+            requestAccess: { SelectionReader.isAccessibilityEnabled() },
+            tapFactory: RecordingSession.makeTap,
+            completion: completion
+        )
     }
 
     static func cancel() {
@@ -202,14 +210,6 @@ final class RecordingSession {
     private var finished = false
     private var pendingResult: (keyCode: UInt32?, modifiers: UInt32?, reason: String)?
     private var pendingKeyCode: UInt32?
-
-    convenience init(completion: @escaping (UInt32?, UInt32?, String) -> Void) {
-        self.init(
-            completion: completion,
-            requestAccess: Self.requestControlAccess,
-            tapFactory: Self.makeTap
-        )
-    }
 
     init(
         completion: @escaping (UInt32?, UInt32?, String) -> Void,
@@ -392,13 +392,7 @@ final class RecordingSession {
         }
     }
 
-    private static func requestControlAccess() -> Bool {
-        guard !SelectionReader.isAccessibilityEnabled() else { return true }
-        SelectionReader.promptForAccessibility()
-        return false
-    }
-
-    private static func makeTap(
+    static func makeTap(
         location: CGEventTapLocation,
         placement: CGEventTapPlacement,
         options: CGEventTapOptions,

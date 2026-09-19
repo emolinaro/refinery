@@ -566,9 +566,13 @@ final class RecordingSessionTests: XCTestCase {
     /// tests never depend on CGEvent.tapCreate succeeding in the test host.
     private func makeSession() -> (session: RecordingSession, box: Box<(UInt32?, UInt32?, String)?>) {
         let box = Box<(UInt32?, UInt32?, String)?>(nil)
-        let session = RecordingSession { keyCode, modifiers, reason in
-            box.value = (keyCode, modifiers, reason)
-        }
+        let session = RecordingSession(
+            completion: { keyCode, modifiers, reason in
+                box.value = (keyCode, modifiers, reason)
+            },
+            requestAccess: { true },
+            tapFactory: { _, _, _, _, _, _ in nil }
+        )
         HotkeyRecorder.currentSession = session
         return (session, box)
     }
@@ -913,9 +917,13 @@ final class AppModelHotkeyTests: XCTestCase {
             hotkeyCenter: hotkeys
         )
         let cancellation = Box<(UInt32?, UInt32?, String)?>(nil)
-        HotkeyRecorder.currentSession = RecordingSession { keyCode, modifiers, reason in
-            cancellation.value = (keyCode, modifiers, reason)
-        }
+        HotkeyRecorder.currentSession = RecordingSession(
+            completion: { keyCode, modifiers, reason in
+                cancellation.value = (keyCode, modifiers, reason)
+            },
+            requestAccess: { true },
+            tapFactory: { _, _, _, _, _, _ in nil }
+        )
         model.suspendHotkey()
 
         model.cancelHotkeyRecording()
@@ -923,6 +931,104 @@ final class AppModelHotkeyTests: XCTestCase {
         XCTAssertEqual(cancellation.value?.2, "Cancelled.")
         XCTAssertNil(HotkeyRecorder.currentSession)
         XCTAssertFalse(hotkeys.isTriggerSuppressed)
+    }
+
+    // MARK: Accessibility permission gate
+
+    private func makePermissionModel(
+        accessibilityEnabled: @escaping () -> Bool,
+        previouslyGranted: Bool,
+        accessibilityPrompt: @escaping () -> Void,
+        writeGranted: ((Bool) -> Void)? = nil
+    ) -> AppModel {
+        let grantedMarker = Box(previouslyGranted)
+        return AppModel(
+            settings: AppSettings(provider: .openAICompatibleEndpoint, baseURL: "https://api.example.com/v1", model: "test-model"),
+            hotkeyCenter: StubHotkeyManager(registrationResults: [true]),
+            accessibilityEnabled: accessibilityEnabled,
+            accessibilityPrompt: accessibilityPrompt,
+            readAccessibilityWasGranted: { grantedMarker.value },
+            writeAccessibilityWasGranted: { granted in
+                grantedMarker.value = granted
+                writeGranted?(granted)
+            },
+            frontmostApplicationPID: { nil }
+        )
+    }
+
+    func testMissingGrantFiresSystemPromptOncePerLaunch() {
+        _ = NSApplication.shared
+        var promptCount = 0
+        let model = makePermissionModel(
+            accessibilityEnabled: { false },
+            previouslyGranted: false,
+            accessibilityPrompt: { promptCount += 1 }
+        )
+
+        model.handleHotkey()
+        XCTAssertEqual(model.lastOutcome, .accessibilityPermissionNeeded(
+            message: AppModel.accessibilityStatusLine
+        ))
+
+        model.handleHotkey()
+        model.handleHotkey()
+
+        XCTAssertEqual(promptCount, 1, "the system prompt must fire at most once per launch")
+        XCTAssertEqual(model.lastOutcome, .accessibilityPermissionNeeded(
+            message: AppModel.accessibilityStatusLine
+        ))
+    }
+
+    func testMissingGrantAfterPreviousGrantExplainsTheRebuildCase() {
+        _ = NSApplication.shared
+        let model = makePermissionModel(
+            accessibilityEnabled: { false },
+            previouslyGranted: true,
+            accessibilityPrompt: {}
+        )
+
+        model.handleHotkey()
+
+        XCTAssertEqual(model.lastOutcome, .accessibilityPermissionNeeded(
+            message: AppModel.accessibilityRegrantMessage
+        ))
+    }
+
+    func testHeldGrantIsPersistedOnFirstSuccessfulHotkey() {
+        _ = NSApplication.shared
+        let writeCount = Box(0)
+        let model = makePermissionModel(
+            accessibilityEnabled: { true },
+            previouslyGranted: false,
+            accessibilityPrompt: { XCTFail("prompt must not fire while the grant is held") },
+            writeGranted: { granted in
+                XCTAssertTrue(granted)
+                writeCount.value += 1
+            }
+        )
+
+        model.handleHotkey()
+        model.handleHotkey()
+
+        XCTAssertEqual(writeCount.value, 1, "the granted marker persists once, not per hotkey press")
+    }
+
+    func testGateRecordsGrantedMarkerWithoutHotkeyRun() {
+        _ = NSApplication.shared
+        let writeCount = Box(0)
+        let model = makePermissionModel(
+            accessibilityEnabled: { true },
+            previouslyGranted: false,
+            accessibilityPrompt: {},
+            writeGranted: { granted in
+                XCTAssertTrue(granted)
+                writeCount.value += 1
+            }
+        )
+
+        _ = model.handleMissingAccessibilityPermission()
+
+        XCTAssertEqual(writeCount.value, 1)
     }
 
     func testSelectionValidationDoesNotBlockMainActor() async throws {
@@ -1572,8 +1678,38 @@ final class AppSettingsTests: XCTestCase {
     func testMissingSettingsUseFirstRunDefaults() throws {
         let defaults = makeDefaults()
         let settings = try AppSettings.load(from: defaults)
-        XCTAssertEqual(settings.baseURL, "https://api.ucloud-ai.com/v1")
-        XCTAssertEqual(settings.model, "ucloud-ai")
+        XCTAssertEqual(settings.baseURL, "")
+        XCTAssertEqual(settings.model, "")
+        XCTAssertEqual(settings.provider, .none)
+    }
+
+    func testBlankUnconfiguredEndpointStaysReadable() throws {
+        // A persisted record with both fields blank is the not-configured-yet
+        // state, not corruption: the settings surface must stay usable so the
+        // user can configure the endpoint in place.
+        let blank = """
+        {"provider":"none","baseURL":"","model":"","preset":"polish","hotkeyKeyCode":35,"hotkeyModifiers":2304}
+        """
+        let defaults = makeDefaults()
+        defaults.set(Data(blank.utf8), forKey: AppSettings.defaultsKey)
+
+        let settings = try AppSettings.load(from: defaults)
+
+        XCTAssertEqual(settings.baseURL, "")
+        XCTAssertEqual(settings.model, "")
+    }
+
+    func testBlankModelWithConfiguredBaseURLIsUnreadable() throws {
+        // A base URL with no model name is a broken record.
+        let broken = """
+        {"baseURL":"https://api.example.com/v1","model":"","hotkeyKeyCode":35,"hotkeyModifiers":2304}
+        """
+        let defaults = makeDefaults()
+        defaults.set(Data(broken.utf8), forKey: AppSettings.defaultsKey)
+
+        XCTAssertThrowsError(try AppSettings.load(from: defaults)) {
+            XCTAssertTrue($0 is AppSettings.LoadError)
+        }
     }
 
     func testUnreadableSettingsDoNotFallBackToProviderDefaults() {
@@ -2081,7 +2217,12 @@ final class ClipboardSelectionProbeTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), "unattributed writer")
     }
 
-    func testCopyProbeRejectsTextMatchingThePreProbeClipboard() async {
+    func testCopyProbeAcceptsTextMatchingThePreProbeClipboard() async {
+        // The common flow: the user copies text X, then selects the same X
+        // and presses the hotkey. The probe's synthesized copy re-copies X;
+        // the fresh write (new changeCount, ownership token gone) proves the
+        // copy happened, so the equal text is a valid selection - it must
+        // not read as "no selection".
         let context = clipboardContext()
         let pasteboard = NSPasteboard(name: .init("RefineryTests.\(UUID().uuidString)"))
         pasteboard.clearContents()
@@ -2105,11 +2246,16 @@ final class ClipboardSelectionProbeTests: XCTestCase {
             }
         )
 
-        XCTAssertEqual(outcome, .noSelection)
+        guard case .clipboardSelection(let text, _) = outcome else {
+            return XCTFail("Expected the equal-to-snapshot copy to read as a selection")
+        }
+        XCTAssertEqual(text, "same text")
         XCTAssertEqual(pasteboard.string(forType: .string), "same text")
     }
 
-    func testCopyProbeRejectsCombinedTextMatchingMultiplePreProbeItems() async {
+    func testCopyProbeAcceptsCombinedTextMatchingMultiplePreProbeItems() async {
+        // Same as the single-item case: a fresh write whose combined string
+        // view equals the pre-probe multi-item view is a valid selection.
         let context = clipboardContext()
         let first = NSPasteboardItem()
         first.setString("one", forType: .string)
@@ -2141,7 +2287,10 @@ final class ClipboardSelectionProbeTests: XCTestCase {
             }
         )
 
-        XCTAssertEqual(outcome, .noSelection)
+        guard case .clipboardSelection(let text, _) = outcome else {
+            return XCTFail("Expected the combined equal-to-snapshot copy to read as a selection")
+        }
+        XCTAssertEqual(text, "one\ntwo")
         XCTAssertEqual(pasteboard.string(forType: .string), "one\ntwo")
     }
 
@@ -2356,7 +2505,14 @@ final class ClipboardSelectionProbeTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), "newer clipboard")
     }
 
-    func testCopyProbePreservesDelayedWriteAfterRestoration() async {
+    func testCopyProbeAcceptsSelectionWhenClipboardAlreadyHeldTheSameText() async {
+        // The captain's live case: the user copies text X in Sublime, then
+        // selects the same X and presses the hotkey. The probe's fresh copy
+        // write equals the pre-probe snapshot; it must be accepted as the
+        // selection, not read as "no selection". A newer write landing
+        // after the probe's lease is preserved by the pipeline's guarded
+        // final write (ifUnchangedSince), covered separately by
+        // testFallbackPreservesCopyMadeWhileEndpointRequestIsRunning.
         let context = clipboardContext()
         let pasteboard = NSPasteboard(name: .init("RefineryTests.\(UUID().uuidString)"))
         pasteboard.clearContents()
@@ -2376,17 +2532,16 @@ final class ClipboardSelectionProbeTests: XCTestCase {
                 if waitCount == 1 {
                     _ = pasteboard.clearContents()
                     XCTAssertTrue(pasteboard.setString("original", forType: .string))
-                } else if waitCount == 2 {
-                    _ = pasteboard.clearContents()
-                    XCTAssertTrue(pasteboard.setString("newer user copy", forType: .string))
                 }
             }
         )
 
-        XCTAssertEqual(outcome, .clipboardFailure(.clipboardChanged))
-        XCTAssertEqual(pasteboard.string(forType: .string), "newer user copy")
+        guard case .clipboardSelection(let text, _) = outcome else {
+            return XCTFail("Expected the same-as-snapshot copy to be accepted as a selection")
+        }
+        XCTAssertEqual(text, "original")
+        XCTAssertEqual(pasteboard.string(forType: .string), "original")
     }
-
     func testCopyProbePreservesWriterThatReplacesOwnershipMarker() async {
         let context = clipboardContext()
         let original = NSPasteboardItem()

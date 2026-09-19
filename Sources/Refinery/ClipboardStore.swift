@@ -17,18 +17,9 @@ extension NSPasteboard: PasteboardAccess {}
 public enum ClipboardStore {
     /// A full-fidelity copy of every current pasteboard representation,
     /// restored verbatim (after a failed write or a clipboard probe) so the
-    /// user's clipboard is never silently lost. `stringRepresentation` is
-    /// the pasteboard's combined string view (multi-item pasteboards join
-    /// with newlines), which lets the probe reject a copy that only repeats
-    /// what the user already had.
+    /// user's clipboard is never silently lost.
     struct Snapshot {
         fileprivate let items: [NSPasteboardItem]
-        fileprivate let stringRepresentation: String?
-
-        func containsString(_ text: String) -> Bool {
-            stringRepresentation == text
-                || items.contains { $0.string(forType: .string) == text }
-        }
 
         func matches(_ pasteboard: any PasteboardAccess) -> Bool {
             guard let currentItems = pasteboard.pasteboardItems,
@@ -127,7 +118,6 @@ public enum ClipboardStore {
     static func snapshot(
         of pasteboard: any PasteboardAccess
     ) -> Result<Snapshot, ClipboardError> {
-        let stringRepresentation = pasteboard.string(forType: .string)
         guard let currentItems = pasteboard.pasteboardItems else {
             return .failure(.snapshotFailed)
         }
@@ -140,10 +130,7 @@ public enum ClipboardStore {
             }
             previousItems.append(copy)
         }
-        return .success(Snapshot(
-            items: previousItems,
-            stringRepresentation: stringRepresentation
-        ))
+        return .success(Snapshot(items: previousItems))
     }
 
     static func restoreWithChangeCount(

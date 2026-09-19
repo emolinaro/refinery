@@ -16,13 +16,33 @@ public final class AppModel: ObservableObject {
         case polished
         case emptySelection
         case hotkeyRegistrationFailure
+        case accessibilityPermissionNeeded(message: String)
         case failure(String)
     }
+
+    /// The menu-bar line shown while the Accessibility grant is missing:
+    /// plain, honest, one line, and never a re-firing system prompt.
+    static let accessibilityStatusLine = "Accessibility permission needed - see System Settings"
+    /// The grant can silently vanish after a rebuild: macOS keys it on the
+    /// code signature, and ad-hoc signing rotates that identity with every
+    /// build, so macOS treats the fresh binary as a new app. A fresh
+    /// binary needs a fresh grant toggle.
+    static let accessibilityRegrantMessage =
+        "Accessibility permission was reset by the new build - re-enable Refinery under System Settings > Privacy & Security > Accessibility"
 
     private let hotkeyCenter: any HotkeyManaging
     private let persistSettings: (AppSettings) -> Void
     private let accessibilityEnabled: () -> Bool
     private let accessibilityPrompt: () -> Void
+    /// Records, in this launch only, that the system Accessibility prompt
+    /// has been shown once; later hotkey presses with the grant still
+    /// missing fall back to the quiet status line instead of re-opening
+    /// System Settings.
+    private var hasShownAccessibilityPromptThisLaunch = false
+    /// Reads the persisted "the grant worked at least once" marker.
+    private let readAccessibilityWasGranted: () -> Bool
+    /// Persists the "the grant worked at least once" marker.
+    private let writeAccessibilityWasGranted: (Bool) -> Void
     private let frontmostApplicationPID: () -> pid_t?
     private let captureSelection: (pid_t) -> SelectionReader.Capture
     private let readSelection: @Sendable (SelectionReader.Context) -> SelectionReader.Outcome
@@ -55,6 +75,10 @@ public final class AppModel: ObservableObject {
         var subscriptionCredential: ChatGPTSession.Credential?
     }
 
+    /// UserDefaults key for the "the Accessibility grant worked at least
+    /// once on this machine" marker, used to detect the rebuild case.
+    static let accessibilityGrantedKey = "com.refinery.accessibility.granted"
+
     /// Exposes hotkey wiring to the app delegate.
     public func setTrigger(_ handler: @escaping () -> Void) {
         hotkeyCenter.onTrigger = handler
@@ -84,6 +108,12 @@ public final class AppModel: ObservableObject {
         persistSettings: @escaping (AppSettings) -> Void = { $0.save() },
         accessibilityEnabled: @escaping () -> Bool = SelectionReader.isAccessibilityEnabled,
         accessibilityPrompt: @escaping () -> Void = SelectionReader.promptForAccessibility,
+        readAccessibilityWasGranted: @escaping () -> Bool = {
+            UserDefaults.standard.bool(forKey: AppModel.accessibilityGrantedKey)
+        },
+        writeAccessibilityWasGranted: @escaping (Bool) -> Void = { granted in
+            UserDefaults.standard.set(granted, forKey: AppModel.accessibilityGrantedKey)
+        },
         frontmostApplicationPID: @escaping () -> pid_t? = SelectionReader.frontmostApplicationPID,
         captureSelection: @escaping (pid_t) -> SelectionReader.Capture = SelectionReader.capture,
         readSelection: @escaping @Sendable (SelectionReader.Context) -> SelectionReader.Outcome = {
@@ -134,6 +164,8 @@ public final class AppModel: ObservableObject {
         self.persistSettings = persistSettings
         self.accessibilityEnabled = accessibilityEnabled
         self.accessibilityPrompt = accessibilityPrompt
+        self.readAccessibilityWasGranted = readAccessibilityWasGranted
+        self.writeAccessibilityWasGranted = writeAccessibilityWasGranted
         self.frontmostApplicationPID = frontmostApplicationPID
         self.captureSelection = captureSelection
         self.readSelection = readSelection
@@ -259,6 +291,40 @@ public final class AppModel: ObservableObject {
         return ok
     }
 
+    // MARK: Accessibility permission gate
+
+    /// Whether the Accessibility grant is currently held, via the injected
+    /// checker (the same one the hotkey guard uses).
+    func accessibilityIsEnabled() -> Bool {
+        accessibilityEnabled()
+    }
+
+    /// The single place that decides how a missing Accessibility grant is
+    /// surfaced. The system prompt (System Settings opening) fires at most
+    /// once per app launch; every later miss shows the quiet menu-bar line
+    /// instead, honestly explaining the rebuilt-binary case when the app
+    /// previously held the grant. Recording a hotkey routes through the
+    /// same gate so the two paths can never double-prompt.
+    /// - Returns: nil when the grant is held (the caller proceeds); the
+    ///   failure outcome to surface otherwise.
+    @discardableResult
+    func handleMissingAccessibilityPermission() -> Outcome? {
+        let previouslyGranted = readAccessibilityWasGranted()
+        guard accessibilityEnabled() else {
+            if !hasShownAccessibilityPromptThisLaunch {
+                hasShownAccessibilityPromptThisLaunch = true
+                accessibilityPrompt()
+            }
+            return previouslyGranted
+                ? .accessibilityPermissionNeeded(message: Self.accessibilityRegrantMessage)
+                : .accessibilityPermissionNeeded(message: Self.accessibilityStatusLine)
+        }
+        if !previouslyGranted {
+            writeAccessibilityWasGranted(true)
+        }
+        return nil
+    }
+
     // MARK: The pipeline
     public func handleHotkey() {
         guard !isRunning, NSApp.modalWindow == nil else { return }
@@ -274,9 +340,11 @@ public final class AppModel: ObservableObject {
             return
         }
 
-        guard accessibilityEnabled() else {
-            lastOutcome = .failure("Accessibility permission is required to read the selected text.")
-            accessibilityPrompt()
+        // The accessibility gate is the single decision point: it records
+        // a newly held grant, and surfaces a missing one through the
+        // once-per-launch prompt policy.
+        if let permissionOutcome = handleMissingAccessibilityPermission() {
+            lastOutcome = permissionOutcome
             return
         }
 

@@ -50,9 +50,11 @@ struct AppSettings: Codable, Equatable {
         hotkeyKeyCode = try container.decodeIfPresent(Int.self, forKey: .hotkeyKeyCode) ?? 35
         hotkeyModifiers = try container.decodeIfPresent(Int.self, forKey: .hotkeyModifiers) ?? 2304
     }
-    /// OpenAI-compatible base URL. The fallback is a private deployment example.
+    /// OpenAI-compatible base URL. First run is blank; the settings field
+    /// shows a placeholder of a working host pattern instead of a real
+    /// host, so no dead endpoint is ever suggested.
     var baseURL: String
-    /// Model name sent to chat completions.
+    /// Model name sent to chat completions. First run is blank.
     var model: String
     /// The currently selected preset (menu-bar choice).
     var preset: Preset = .polish
@@ -64,10 +66,7 @@ struct AppSettings: Codable, Equatable {
     static let defaultsKey = "com.refinery.app.settings"
 
     static func load(from defaults: UserDefaults = .standard) throws -> AppSettings {
-        let fallback = AppSettings(
-            baseURL: "https://api.ucloud-ai.com/v1",
-            model: "ucloud-ai"
-        )
+        let fallback = AppSettings(baseURL: "", model: "")
         guard let data = defaults.data(forKey: Self.defaultsKey) else {
             return fallback
         }
@@ -77,7 +76,12 @@ struct AppSettings: Codable, Equatable {
             let modifiers = UInt32(exactly: settings.hotkeyModifiers)
             guard let keyCode, let modifiers,
                   HotkeyRecorder.isValidCombo(keyCode: keyCode, modifiers: modifiers),
-                  !settings.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                  // A blank model is readable only when the base URL is
+                  // blank too: the endpoint simply is not configured yet.
+                  // A blank model against a configured base URL is a broken
+                  // record and stays unreadable.
+                  settings.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    == settings.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw LoadError.unreadable
             }
             return settings

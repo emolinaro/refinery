@@ -163,7 +163,10 @@ enum SelectionReader {
         return AXIsProcessTrustedWithOptions(options)
     }
 
-    /// Presents the system accessibility permission prompt (call once, on first run).
+    /// Presents the system accessibility permission prompt. Only AppModel's
+    /// once-per-launch gate may call this; callers that just need to know
+    /// whether the grant is held must use `isAccessibilityEnabled()` so the
+    /// system never re-opens System Settings on every hotkey press.
     static func promptForAccessibility() {
         let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)

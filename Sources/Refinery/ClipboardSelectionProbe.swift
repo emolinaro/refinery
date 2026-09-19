@@ -389,13 +389,19 @@ enum ClipboardSelectionProbe {
                 outcome = .unreadable
                 break
             }
-            guard let text = observation.text, !snapshot.containsString(text) else {
-                outcome = .noSelection
-                break
-            }
+            // A copy equal to the pre-probe clipboard is a valid selection:
+            // the common flow copies the text first, then hotkeys the same
+            // selection. The stale-read case this used to guard against
+            // cannot reach here - a pasteboard never re-written still holds
+            // the ownership token and is rejected above - and the equal-text
+            // rejection made that common flow read as "no selection".
             // macOS exposes no pasteboard writer identity. A same-moment background write can
             // still win while the target remains focused; the tight window and continuous focus
             // lease are the strongest corroboration available for AX-hostile applications.
+            guard let text = observation.text else {
+                outcome = .noSelection
+                break
+            }
             outcome = text.isEmpty ? .noSelection : .selected(text)
             break
         }
