@@ -868,7 +868,7 @@ final class AppModelHotkeyTests: XCTestCase {
     func testSuccessfulAdoptionRemainsSuppressedUntilExplicitlyResumed() {
         let hotkeys = StubHotkeyManager(registrationResults: [true, true])
         let model = AppModel(
-            settings: AppSettings(baseURL: "https://api.example.com/v1", model: "test-model"),
+            settings: AppSettings(provider: .openAICompatibleEndpoint, baseURL: "https://api.example.com/v1", model: "test-model"),
             hotkeyCenter: hotkeys
         )
 
@@ -883,7 +883,7 @@ final class AppModelHotkeyTests: XCTestCase {
     func testSuccessfulAdoptionClearsPriorRegistrationFailure() {
         let hotkeys = StubHotkeyManager(registrationResults: [false, true])
         let model = AppModel(
-            settings: AppSettings(baseURL: "https://api.example.com/v1", model: "test-model"),
+            settings: AppSettings(provider: .openAICompatibleEndpoint, baseURL: "https://api.example.com/v1", model: "test-model"),
             hotkeyCenter: hotkeys
         )
         XCTAssertNotNil(model.lastOutcome)
@@ -896,7 +896,7 @@ final class AppModelHotkeyTests: XCTestCase {
     func testSuccessfulAdoptionPreservesUnrelatedFailure() {
         let hotkeys = StubHotkeyManager(registrationResults: [true, true])
         let model = AppModel(
-            settings: AppSettings(baseURL: "https://api.example.com/v1", model: "test-model"),
+            settings: AppSettings(provider: .openAICompatibleEndpoint, baseURL: "https://api.example.com/v1", model: "test-model"),
             hotkeyCenter: hotkeys
         )
         model.lastOutcome = .failure("Endpoint failure")
@@ -909,7 +909,7 @@ final class AppModelHotkeyTests: XCTestCase {
     func testClosingSettingsCancelsRecordingAndResumesHotkey() {
         let hotkeys = StubHotkeyManager(registrationResults: [true])
         let model = AppModel(
-            settings: AppSettings(baseURL: "https://api.example.com/v1", model: "test-model"),
+            settings: AppSettings(provider: .openAICompatibleEndpoint, baseURL: "https://api.example.com/v1", model: "test-model"),
             hotkeyCenter: hotkeys
         )
         let cancellation = Box<(UInt32?, UInt32?, String)?>(nil)
@@ -931,7 +931,7 @@ final class AppModelHotkeyTests: XCTestCase {
         let releaseRead = DispatchSemaphore(value: 0)
         let selectionContext = makeSelectionContext(processIdentifier: 101)
         let model = AppModel(
-            settings: AppSettings(baseURL: "https://api.example.com/v1", model: "test-model"),
+            settings: AppSettings(provider: .openAICompatibleEndpoint, baseURL: "https://api.example.com/v1", model: "test-model"),
             hotkeyCenter: StubHotkeyManager(registrationResults: [true]),
             accessibilityEnabled: { true },
             frontmostApplicationPID: { 101 },
@@ -966,7 +966,7 @@ final class AppModelHotkeyTests: XCTestCase {
         var frontmostProcessIdentifier: pid_t = 101
         let selectionContext = makeSelectionContext(processIdentifier: 101)
         let model = AppModel(
-            settings: AppSettings(baseURL: "https://api.example.com/v1", model: "test-model"),
+            settings: AppSettings(provider: .openAICompatibleEndpoint, baseURL: "https://api.example.com/v1", model: "test-model"),
             hotkeyCenter: StubHotkeyManager(registrationResults: [true]),
             accessibilityEnabled: { true },
             frontmostApplicationPID: { frontmostProcessIdentifier },
@@ -999,6 +999,7 @@ final class AppModelHotkeyTests: XCTestCase {
         var currentAPIKey = "original-key"
         let model = AppModel(
             settings: AppSettings(
+                provider: .openAICompatibleEndpoint,
                 baseURL: "https://original.example.com/v1",
                 model: "original-model",
                 preset: .formal
@@ -1059,7 +1060,7 @@ final class AppModelHotkeyTests: XCTestCase {
         _ = NSApplication.shared
         let selectionContext = makeSelectionContext(processIdentifier: 101)
         let model = AppModel(
-            settings: AppSettings(baseURL: "https://api.example.com/v1", model: "test-model"),
+            settings: AppSettings(provider: .openAICompatibleEndpoint, baseURL: "https://api.example.com/v1", model: "test-model"),
             hotkeyCenter: StubHotkeyManager(registrationResults: [true]),
             accessibilityEnabled: { true },
             frontmostApplicationPID: { 101 },
@@ -1087,7 +1088,7 @@ final class AppModelHotkeyTests: XCTestCase {
             element: AXUIElementCreateApplication(101)
         )
         let model = AppModel(
-            settings: AppSettings(baseURL: "https://api.example.com/v1", model: "test-model"),
+            settings: AppSettings(provider: .openAICompatibleEndpoint, baseURL: "https://api.example.com/v1", model: "test-model"),
             hotkeyCenter: StubHotkeyManager(registrationResults: [true]),
             accessibilityEnabled: { true },
             frontmostApplicationPID: { 101 },
@@ -1139,7 +1140,7 @@ final class AppModelHotkeyTests: XCTestCase {
         )
         let fallbackWriteChangeCount = pasteboard.changeCount
         let model = AppModel(
-            settings: AppSettings(baseURL: "https://api.example.com/v1", model: "test-model"),
+            settings: AppSettings(provider: .openAICompatibleEndpoint, baseURL: "https://api.example.com/v1", model: "test-model"),
             hotkeyCenter: StubHotkeyManager(registrationResults: [true]),
             accessibilityEnabled: { true },
             frontmostApplicationPID: { 101 },
@@ -1193,7 +1194,7 @@ final class AppModelHotkeyTests: XCTestCase {
             element: AXUIElementCreateApplication(101)
         )
         let model = AppModel(
-            settings: AppSettings(baseURL: "https://api.example.com/v1", model: "test-model"),
+            settings: AppSettings(provider: .openAICompatibleEndpoint, baseURL: "https://api.example.com/v1", model: "test-model"),
             hotkeyCenter: StubHotkeyManager(registrationResults: [true]),
             accessibilityEnabled: { true },
             frontmostApplicationPID: { 101 },
@@ -1235,7 +1236,7 @@ final class AppModelHotkeyTests: XCTestCase {
             element: AXUIElementCreateApplication(101)
         )
         let model = AppModel(
-            settings: AppSettings(baseURL: "https://api.example.com/v1", model: "test-model"),
+            settings: AppSettings(provider: .openAICompatibleEndpoint, baseURL: "https://api.example.com/v1", model: "test-model"),
             hotkeyCenter: StubHotkeyManager(registrationResults: [true]),
             accessibilityEnabled: { true },
             frontmostApplicationPID: { 101 },
@@ -1271,6 +1272,218 @@ final class AppModelHotkeyTests: XCTestCase {
         )
     }
 
+    func testSubscriptionProviderRunsPolishViaSubscriptionClient() async throws {
+        _ = NSApplication.shared
+        let selectionContext = makeSelectionContext(
+            processIdentifier: 101,
+            selection: .selected("subscription text")
+        )
+        let capturedSubscriptionRequest = LockedBox<CapturedSubscriptionRequest?>(nil)
+        let credential = ChatGPTSession.Credential(accessToken: "sub-access", accountID: "acct-1")
+        let model = AppModel(
+            settings: AppSettings(
+                provider: .openAISubscription,
+                baseURL: "https://api.example.com/v1",
+                model: "unused-model"
+            ),
+            hotkeyCenter: StubHotkeyManager(registrationResults: [true]),
+            accessibilityEnabled: { true },
+            frontmostApplicationPID: { 101 },
+            captureSelection: { _ in .accessibility(selectionContext) },
+            readSelection: { _ in .selected("subscription text") },
+            fetchSubscriptionCredential: { credential },
+            polish: { _, _, _, _, _, _ in
+                XCTFail("endpoint polish must not run for the subscription provider")
+                return ""
+            },
+            polishViaSubscription: { text, preset, custom, credential in
+                capturedSubscriptionRequest.set(CapturedSubscriptionRequest(
+                    text: text,
+                    preset: preset,
+                    customPrompt: custom,
+                    accessToken: credential.accessToken,
+                    accountID: credential.accountID
+                ))
+                return "polished via subscription"
+            },
+            writeClipboard: { _, _ in .success(()) }
+        )
+
+        model.handleHotkey()
+
+        for _ in 0..<100 where model.isRunning {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(capturedSubscriptionRequest.get(), CapturedSubscriptionRequest(
+            text: "subscription text",
+            preset: .polish,
+            customPrompt: nil,
+            accessToken: "sub-access",
+            accountID: "acct-1"
+        ))
+        XCTAssertEqual(model.lastOutcome, .polished)
+        XCTAssertEqual(model.lastPolishProvider, .openAISubscription)
+    }
+
+    func testNoProviderSelectionSurfacesConfigurationMessage() async throws {
+        _ = NSApplication.shared
+        let selectionContext = makeSelectionContext(
+            processIdentifier: 101,
+            selection: .selected("some text")
+        )
+        let model = AppModel(
+            settings: AppSettings(provider: .none, baseURL: "https://api.example.com/v1", model: "m"),
+            hotkeyCenter: StubHotkeyManager(registrationResults: [true]),
+            accessibilityEnabled: { true },
+            frontmostApplicationPID: { 101 },
+            captureSelection: { _ in .accessibility(selectionContext) },
+            readSelection: { _ in .selected("some text") },
+            fetchSubscriptionCredential: {
+                XCTFail("no credential fetch for the none provider")
+                throw SubscriptionError.session("unreachable")
+            }
+        )
+
+        model.handleHotkey()
+
+        for _ in 0..<100 where model.isRunning {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        guard case .failure(let message) = model.lastOutcome else {
+            return XCTFail("expected a configuration failure, got \(String(describing: model.lastOutcome))")
+        }
+        XCTAssertTrue(message.contains("No provider is selected"), message)
+    }
+
+    func testSubscriptionCredentialFailureSurfacesBeforeAnyPolish() async throws {
+        _ = NSApplication.shared
+        let selectionContext = makeSelectionContext(
+            processIdentifier: 101,
+            selection: .selected("subscription text")
+        )
+        let model = AppModel(
+            settings: AppSettings(
+                provider: .openAISubscription,
+                baseURL: "",
+                model: ""
+            ),
+            hotkeyCenter: StubHotkeyManager(registrationResults: [true]),
+            accessibilityEnabled: { true },
+            frontmostApplicationPID: { 101 },
+            captureSelection: { _ in .accessibility(selectionContext) },
+            readSelection: { _ in .selected("subscription text") },
+            fetchSubscriptionCredential: {
+                throw SubscriptionError.session("The codex CLI is not signed in with a ChatGPT account.")
+            }
+        )
+
+        model.handleHotkey()
+
+        for _ in 0..<100 where model.isRunning {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        guard case .failure(let message) = model.lastOutcome else {
+            return XCTFail("expected a credential failure")
+        }
+        XCTAssertTrue(message.contains("signed in"), "message was: \(message)")
+    }
+
+    func testDefaultCredentialFetchHonorsInAppSignOutGate() async throws {
+        _ = NSApplication.shared
+        // No fetchSubscriptionCredential injected: this is exactly the
+        // production wiring, which must route through the account
+        // controller's sign-out gate rather than reading auth.json
+        // directly.
+        let selectionContext = makeSelectionContext(
+            processIdentifier: 101,
+            selection: .selected("subscription text")
+        )
+        let model = AppModel(
+            settings: AppSettings(
+                provider: .openAISubscription,
+                baseURL: "",
+                model: ""
+            ),
+            hotkeyCenter: StubHotkeyManager(registrationResults: [true]),
+            accessibilityEnabled: { true },
+            frontmostApplicationPID: { 101 },
+            captureSelection: { _ in .accessibility(selectionContext) },
+            readSelection: { _ in .selected("subscription text") },
+            polishViaSubscription: { _, _, _, _ in
+                XCTFail("polish must not run once signed out in-app")
+                return ""
+            }
+        )
+
+        model.subscriptionAccount.signOut()
+        XCTAssertTrue(model.subscriptionAccount.loginExistsOnDisk)
+
+        model.handleHotkey()
+
+        for _ in 0..<100 where model.isRunning {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        guard case .failure(let message) = model.lastOutcome else {
+            return XCTFail("expected the sign-out gate failure, got \(String(describing: model.lastOutcome))")
+        }
+        XCTAssertTrue(message.contains("signed out"), "message was: \(message)")
+    }
+
+    func testMidFlightProviderSwitchKeepsHotkeyTimeRouting() async throws {
+        _ = NSApplication.shared
+        // The provider is captured when the hotkey fires; switching the
+        // picker mid-flight must not reroute the in-flight request to a
+        // provider whose credentials were never gathered.
+        let selectionContext = makeSelectionContext(
+            processIdentifier: 101,
+            selection: .selected("subscription text")
+        )
+        let credential = ChatGPTSession.Credential(accessToken: "sub-access", accountID: "acct-1")
+        let endpointPolishRan = LockedBox(false)
+        // Late-bound model reference so the polish closure can flip the
+        // persisted provider after construction.
+        let modelBox = LockedBox<AppModel?>(nil)
+        let model = AppModel(
+            settings: AppSettings(
+                provider: .openAISubscription,
+                baseURL: "https://api.example.com/v1",
+                model: "unused-model"
+            ),
+            hotkeyCenter: StubHotkeyManager(registrationResults: [true]),
+            accessibilityEnabled: { true },
+            frontmostApplicationPID: { 101 },
+            captureSelection: { _ in .accessibility(selectionContext) },
+            readSelection: { _ in .selected("subscription text") },
+            fetchSubscriptionCredential: { credential },
+            polish: { _, _, _, _, _, _ in
+                endpointPolishRan.set(true)
+                return "wrong provider"
+            },
+            polishViaSubscription: { text, _, _, credential in
+                // Switch the persisted provider while the request is in
+                // flight, after the hotkey-time capture.
+                let model = modelBox.get()
+                await MainActor.run {
+                    model?.update { $0.provider = .openAICompatibleEndpoint }
+                }
+                XCTAssertEqual(text, "subscription text")
+                XCTAssertEqual(credential.accessToken, "sub-access")
+                return "polished via subscription"
+            },
+            writeClipboard: { _, _ in .success(()) }
+        )
+        modelBox.set(model)
+
+        model.handleHotkey()
+
+        for _ in 0..<100 where model.isRunning {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertFalse(endpointPolishRan.get(), "mid-flight switch must not reroute to the endpoint provider")
+        XCTAssertEqual(model.lastOutcome, .polished)
+        XCTAssertEqual(model.lastPolishProvider, .openAISubscription)
+    }
+
     func testAXCaptureNeverInvokesClipboardProbe() async throws {
         _ = NSApplication.shared
         let selectionContext = makeSelectionContext(
@@ -1279,7 +1492,7 @@ final class AppModelHotkeyTests: XCTestCase {
         )
         let probeCount = LockedBox(0)
         let model = AppModel(
-            settings: AppSettings(baseURL: "https://api.example.com/v1", model: "test-model"),
+            settings: AppSettings(provider: .openAICompatibleEndpoint, baseURL: "https://api.example.com/v1", model: "test-model"),
             hotkeyCenter: StubHotkeyManager(registrationResults: [true]),
             accessibilityEnabled: { true },
             frontmostApplicationPID: { 101 },
@@ -1405,6 +1618,35 @@ final class AppSettingsTests: XCTestCase {
             XCTAssertThrowsError(try AppSettings.load(from: defaults)) {
                 XCTAssertTrue($0 is AppSettings.LoadError)
             }
+        }
+    }
+
+    func testV01xSettingsWithoutProviderDecodeAsNone() throws {
+        // The exact JSON v0.1.x persisted: no `provider` key. Decoding it
+        // must succeed (upgrades never strand existing installs) and the
+        // provider must default to none, not the endpoint.
+        let legacy = """
+        {"baseURL":"https://api.example.com/v1","model":"test-model","preset":"polish","hotkeyKeyCode":35,"hotkeyModifiers":2304}
+        """
+        let defaults = makeDefaults()
+        defaults.set(Data(legacy.utf8), forKey: AppSettings.defaultsKey)
+
+        let settings = try AppSettings.load(from: defaults)
+
+        XCTAssertEqual(settings.provider, .none)
+        XCTAssertEqual(settings.baseURL, "https://api.example.com/v1")
+        XCTAssertEqual(settings.model, "test-model")
+    }
+
+    func testUnknownProviderValueIsUnreadable() throws {
+        let unknown = """
+        {"provider":"lmstudio","baseURL":"https://api.example.com/v1","model":"test-model","hotkeyKeyCode":35,"hotkeyModifiers":2304}
+        """
+        let defaults = makeDefaults()
+        defaults.set(Data(unknown.utf8), forKey: AppSettings.defaultsKey)
+
+        XCTAssertThrowsError(try AppSettings.load(from: defaults)) {
+            XCTAssertTrue($0 is AppSettings.LoadError)
         }
     }
 
@@ -2606,6 +2848,14 @@ private struct CapturedPolishRequest: Equatable {
     let preset: Preset
     let customPrompt: String?
     let apiKey: String
+}
+
+private struct CapturedSubscriptionRequest: Equatable {
+    let text: String
+    let preset: Preset
+    let customPrompt: String?
+    let accessToken: String
+    let accountID: String?
 }
 
 private func makeSelectionContext(

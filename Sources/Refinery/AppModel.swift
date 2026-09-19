@@ -31,11 +31,15 @@ public final class AppModel: ObservableObject {
         ClipboardSelectionProbe.OwnershipHandler
     ) async -> SelectionReader.Outcome
     private let readAPIKey: (URL) throws -> String?
+    private let fetchSubscriptionCredential: @Sendable () async throws -> ChatGPTSession.Credential
     private let polish: @Sendable (URL, String, String, Preset, String?, String) async throws -> String
+    private let polishViaSubscription: @Sendable (String, Preset, String?, ChatGPTSession.Credential) async throws -> String
     private let writeClipboard: (String, Int?) -> Result<Void, ClipboardError>
     private var isClipboardOwnershipActive = false
     private var pendingTerminationReply: ((Bool) -> Void)?
 
+    /// The provider that served the most recent polish, for the dropdown.
+    @Published private(set) var lastPolishProvider: ProviderSelection?
     private enum APIKeySnapshot: Sendable {
         case available(String)
         case missing
@@ -43,10 +47,12 @@ public final class AppModel: ObservableObject {
     }
 
     private struct RequestConfiguration: Sendable {
+        let provider: ProviderSelection
         let baseURL: URL?
         let model: String
         let preset: Preset
         let apiKey: APIKeySnapshot?
+        var subscriptionCredential: ChatGPTSession.Credential?
     }
 
     /// Exposes hotkey wiring to the app delegate.
@@ -93,6 +99,7 @@ public final class AppModel: ObservableObject {
             )
         },
         readAPIKey: @escaping (URL) throws -> String? = { try KeychainStore.readAPIKey(for: $0) },
+        fetchSubscriptionCredential: (@Sendable () async throws -> ChatGPTSession.Credential)? = nil,
         polish: @escaping @Sendable (
             URL,
             String,
@@ -103,6 +110,15 @@ public final class AppModel: ObservableObject {
         ) async throws -> String = { baseURL, model, text, preset, custom, key in
             let client = EndpointClient(baseURL: baseURL, model: model)
             return try await client.polish(text, preset: preset, customPrompt: custom, apiKey: key)
+        },
+        polishViaSubscription: @escaping @Sendable (
+            String,
+            Preset,
+            String?,
+            ChatGPTSession.Credential
+        ) async throws -> String = { text, preset, custom, credential in
+            let client = SubscriptionClient()
+            return try await client.polish(text, preset: preset, customPrompt: custom, credential: credential)
         },
         writeClipboard: @escaping (String, Int?) -> Result<Void, ClipboardError> = {
             ClipboardStore.writeResult(
@@ -123,11 +139,14 @@ public final class AppModel: ObservableObject {
         self.readSelection = readSelection
         self.probeClipboardSelection = probeClipboardSelection
         self.readAPIKey = readAPIKey
+        self.accountController = SubscriptionAccountController()
+        self.fetchSubscriptionCredential = fetchSubscriptionCredential
+            ?? { [accountController] in try await accountController.credential() }
         self.polish = polish
+        self.polishViaSubscription = polishViaSubscription
         self.writeClipboard = writeClipboard
         applyHotkey()
     }
-
     // MARK: Settings
     func update(_ mutate: (inout AppSettings) -> Void) {
         mutate(&settings)
@@ -158,6 +177,28 @@ public final class AppModel: ObservableObject {
         let trimmed = settings.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         return URL(string: trimmed)
     }
+
+    // MARK: Provider
+
+    /// The provider serving polish requests under current settings, or nil
+    /// when none is usable.
+    var activeProvider: ProviderSelection? {
+        PolishService(settings: settings).activeProvider
+    }
+
+    /// Selects the provider, persisting immediately.
+    func select(provider: ProviderSelection) {
+        update { $0.provider = provider }
+        if provider == .openAISubscription {
+            subscriptionAccount.refreshAccountState()
+        }
+    }
+
+    /// The non-secret account state shown in Settings and the dropdown.
+    var subscriptionAccount: SubscriptionAccountController { accountController }
+
+    /// The subscription account controller, injected by tests.
+    private let accountController: SubscriptionAccountController
 
     // MARK: Hotkey
     func applyHotkey() {
@@ -226,6 +267,7 @@ public final class AppModel: ObservableObject {
         let requestBaseURL = baseURL
         let requestModel = settings.model
         let requestPreset = settings.preset
+        let requestProvider = settings.provider
 
         guard settingsAreReadable else {
             lastOutcome = .failure("Settings are unreadable. Re-open Refinery settings to reconfigure the endpoint.")
@@ -254,7 +296,8 @@ public final class AppModel: ObservableObject {
         }
 
         let apiKey: APIKeySnapshot?
-        if let url = requestBaseURL, EndpointClient.isAllowedBaseURL(url) {
+        if requestProvider == .openAICompatibleEndpoint,
+           let url = requestBaseURL, EndpointClient.isAllowedBaseURL(url) {
             do {
                 if let savedKey = try readAPIKey(url) {
                     apiKey = .available(savedKey)
@@ -268,16 +311,28 @@ public final class AppModel: ObservableObject {
             apiKey = nil
         }
         let configuration = RequestConfiguration(
+            provider: requestProvider,
             baseURL: requestBaseURL,
             model: requestModel,
             preset: requestPreset,
-            apiKey: apiKey
+            apiKey: apiKey,
+            subscriptionCredential: nil
         )
 
         isRunning = true
         let readSelection = self.readSelection
         let probeClipboardSelection = self.probeClipboardSelection
+        let fetchSubscriptionCredential: @Sendable () async throws -> ChatGPTSession.Credential = { [fetchSubscriptionCredential] in
+            try await fetchSubscriptionCredential()
+        }
+        let polish = self.polish
+        let polishViaSubscription = self.polishViaSubscription
         Task { [weak self] in
+            // Fetch the subscription credential (refreshing if needed)
+            // concurrently with reading the selection.
+            async let subscriptionCredential = requestProvider == .openAISubscription
+                ? fetchSubscriptionCredential()
+                : nil
             let selection: SelectionReader.Outcome
             switch selectionCapture {
             case .accessibility(let context):
@@ -291,7 +346,27 @@ public final class AppModel: ObservableObject {
             case .unavailable:
                 selection = .unreadable
             }
-            self?.handle(selection: selection, configuration: configuration)
+            let fetchedSubscriptionCredential: ChatGPTSession.Credential?
+            do {
+                fetchedSubscriptionCredential = try await subscriptionCredential
+            } catch {
+                fetchedSubscriptionCredential = nil
+                await MainActor.run {
+                    self?.lastOutcome = .failure(
+                        (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                    )
+                    self?.isRunning = false
+                }
+                return
+            }
+            var mutableConfiguration = configuration
+            mutableConfiguration.subscriptionCredential = fetchedSubscriptionCredential
+            self?.handle(
+                selection: selection,
+                configuration: mutableConfiguration,
+                polish: polish,
+                polishViaSubscription: polishViaSubscription
+            )
         }
     }
 
@@ -316,7 +391,9 @@ public final class AppModel: ObservableObject {
 
     private func handle(
         selection: SelectionReader.Outcome,
-        configuration: RequestConfiguration
+        configuration: RequestConfiguration,
+        polish: @escaping @Sendable (URL, String, String, Preset, String?, String) async throws -> String,
+        polishViaSubscription: @escaping @Sendable (String, Preset, String?, ChatGPTSession.Credential) async throws -> String
     ) {
         let selected: String
         let expectedClipboardChangeCount: Int?
@@ -349,29 +426,44 @@ public final class AppModel: ObservableObject {
             return
         }
 
-        guard let url = configuration.baseURL, EndpointClient.isAllowedBaseURL(url) else {
-            lastOutcome = .failure(EndpointError.invalidBaseURL.localizedDescription)
+        // Provider gate: nothing runs when no provider is selected. The
+        // provider was captured at hotkey time, so a mid-flight settings
+        // change never mixes credential state from one provider with the
+        // routing of another.
+        guard configuration.provider != .none else {
+            lastOutcome = .failure(PolishService.configurationMessage(for: settings))
             isRunning = false
             return
         }
 
-        guard let apiKeySnapshot = configuration.apiKey else {
-            lastOutcome = .failure(EndpointError.missingAPIKey.localizedDescription)
-            isRunning = false
-            return
-        }
-        let key: String
-        switch apiKeySnapshot {
-        case .available(let savedKey):
-            key = savedKey
-        case .missing:
-            lastOutcome = .failure(EndpointError.missingAPIKey.localizedDescription)
-            isRunning = false
-            return
-        case .failure(let message):
-            lastOutcome = .failure(message)
-            isRunning = false
-            return
+        // Endpoint credentials only gate the endpoint provider; the
+        // subscription provider carries its own credential.
+        var key: String?
+        if configuration.provider == .openAICompatibleEndpoint {
+            guard let url = configuration.baseURL, EndpointClient.isAllowedBaseURL(url) else {
+                lastOutcome = .failure(EndpointError.invalidBaseURL.localizedDescription)
+                isRunning = false
+                return
+            }
+            guard let apiKeySnapshot = configuration.apiKey else {
+                lastOutcome = .failure(EndpointError.missingAPIKey.localizedDescription)
+                isRunning = false
+                return
+            }
+            switch apiKeySnapshot {
+            case .available(let savedKey):
+                key = savedKey
+            case .missing:
+                lastOutcome = .failure(EndpointError.missingAPIKey.localizedDescription)
+                isRunning = false
+                return
+            case .failure(let message):
+                lastOutcome = .failure(message)
+                isRunning = false
+                return
+            }
+        } else {
+            key = nil
         }
 
         // Custom preset requires a typed prompt; the panel returns nil when cancelled.
@@ -390,14 +482,37 @@ public final class AppModel: ObservableObject {
         let expectedChangeCount = expectedClipboardChangeCount
         Task { @MainActor in
             do {
-                let result = try await polish(
-                    url,
-                    configuration.model,
-                    selectedText,
-                    configuration.preset,
-                    custom,
-                    apiKey
-                )
+                let result: String
+                switch configuration.provider {
+                case .openAISubscription:
+                    guard let credential = configuration.subscriptionCredential else {
+                        throw SubscriptionError.session(
+                            PolishService.configurationMessage(for: self.settings)
+                        )
+                    }
+                    result = try await polishViaSubscription(
+                        selectedText,
+                        configuration.preset,
+                        custom,
+                        credential
+                    )
+                case .openAICompatibleEndpoint:
+                    guard let url = configuration.baseURL,
+                          let apiKey else {
+                        throw EndpointError.invalidBaseURL
+                    }
+                    result = try await polish(
+                        url,
+                        configuration.model,
+                        selectedText,
+                        configuration.preset,
+                        custom,
+                        apiKey
+                    )
+                case .none:
+                    throw EndpointError.invalidBaseURL
+                }
+                lastPolishProvider = configuration.provider
                 switch writeClipboard(result, expectedChangeCount) {
                 case .success:
                     break
