@@ -18,6 +18,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
     private var settingsPopover: NSPopover?
     private var pendingSettings = false
 
+    private let menuWidth: CGFloat = 300
+    private let menuMinimumHeight: CGFloat = 340
+    private var menuContentView: NSView?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
@@ -38,11 +42,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
             // popover shown while tracking is active is dismissed with it.
             self?.pendingSettings = true
             self?.statusItem?.menu?.cancelTracking()
-        })
+        }.frame(width: menuWidth))
         // Explicit non-zero frame: NSMenu measures items during tracking and a
         // zero-height measurement makes the menu lay out empty and dismiss
         // (AppKit logs "A menu item's height should never be 0").
-        content.frame = NSRect(x: 0, y: 0, width: 300, height: 340)
+        content.frame = NSRect(x: 0, y: 0, width: menuWidth, height: menuMinimumHeight)
+        menuContentView = content
         topItem.view = content
         menu.addItem(topItem)
         item.menu = menu
@@ -65,6 +70,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopo
     }
 
     // MARK: NSMenuDelegate
+
+    func menuWillOpen(_ menu: NSMenu) {
+        // The menu's height must follow its content: the accessibility
+        // status messages wrap to multiple lines, and the fixed hosting
+        // frame would clip the Quit button off the bottom of the menu.
+        guard let content = menuContentView else { return }
+        content.layoutSubtreeIfNeeded()
+        let height = max(menuMinimumHeight, content.intrinsicContentSize.height)
+        content.setFrameSize(NSSize(width: menuWidth, height: height))
+        content.layoutSubtreeIfNeeded()
+    }
 
     func menuDidClose(_ menu: NSMenu) {
         guard pendingSettings else { return }

@@ -941,13 +941,18 @@ final class AppModelHotkeyTests: XCTestCase {
         accessibilityPrompt: @escaping () -> Void,
         writeGranted: ((Bool) -> Void)? = nil
     ) -> AppModel {
-        AppModel(
+        let grantedMarker = Box(previouslyGranted)
+        return AppModel(
             settings: AppSettings(provider: .openAICompatibleEndpoint, baseURL: "https://api.example.com/v1", model: "test-model"),
             hotkeyCenter: StubHotkeyManager(registrationResults: [true]),
             accessibilityEnabled: accessibilityEnabled,
             accessibilityPrompt: accessibilityPrompt,
-            readAccessibilityWasGranted: { previouslyGranted },
-            writeAccessibilityWasGranted: writeGranted ?? { _ in }
+            readAccessibilityWasGranted: { grantedMarker.value },
+            writeAccessibilityWasGranted: { granted in
+                grantedMarker.value = granted
+                writeGranted?(granted)
+            },
+            frontmostApplicationPID: { nil }
         )
     }
 
