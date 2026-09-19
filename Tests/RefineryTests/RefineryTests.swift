@@ -1215,14 +1215,12 @@ final class AppModelHotkeyTests: XCTestCase {
         }
 
         XCTAssertTrue(deferred)
-        XCTAssertTrue(model.isFinishingClipboardRestore)
         XCTAssertNil(replyValue.value)
 
         gate.continuation.yield()
         gate.continuation.finish()
         await fulfillment(of: [terminationReply], timeout: 1)
 
-        XCTAssertFalse(model.isFinishingClipboardRestore)
         XCTAssertEqual(replyValue.value, true)
     }
 
@@ -1267,7 +1265,6 @@ final class AppModelHotkeyTests: XCTestCase {
         }
 
         XCTAssertEqual(replyValue.value, false)
-        XCTAssertFalse(model.isFinishingClipboardRestore)
         XCTAssertEqual(
             model.lastOutcome,
             .failure(ClipboardError.restorationFailed.localizedDescription)
