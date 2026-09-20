@@ -566,13 +566,21 @@ enum ClipboardSelectionProbe {
         focusedElementResolver: (pid_t) -> SelectionReader.ElementResolution
     ) -> Bool {
         guard accessibilityEnabled(),
-              frontmostApplicationPID() == context.processIdentifier,
-              case .resolved(let focusedElement) = focusedElementResolver(
-                  context.processIdentifier
-              ) else {
+              frontmostApplicationPID() == context.processIdentifier else {
             return false
         }
-        return CFEqual(focusedElement, context.element)
+        // With no captured element identity - the Electron shape, where the
+        // focused element never resolved - the frontmost PID lease alone
+        // carries focus continuity; every other guard is unchanged.
+        guard let capturedElement = context.element else {
+            return true
+        }
+        guard case .resolved(let focusedElement) = focusedElementResolver(
+            context.processIdentifier
+        ) else {
+            return false
+        }
+        return CFEqual(focusedElement, capturedElement)
     }
 
     private static func restoreSnapshot(

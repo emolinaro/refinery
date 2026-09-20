@@ -3,7 +3,9 @@ import ApplicationServices
 
 /// Reads the current text selection from the frontmost app via the
 /// Accessibility API (AXUIElement), routing apps that render text without AX
-/// backing to the guarded clipboard probe in ClipboardSelectionProbe.
+/// backing - including Electron apps (Slack, VS Code, Discord) whose focused
+/// element never resolves at all - to the guarded clipboard probe in
+/// ClipboardSelectionProbe.
 enum SelectionReader {
     typealias AttributeReader = (AXUIElement, CFString) -> (AXError, CFTypeRef?)
     typealias ChildrenReader = (AXUIElement) -> (AXError, [AXUIElement]?)
@@ -36,7 +38,11 @@ enum SelectionReader {
 
     struct ClipboardContext: @unchecked Sendable {
         let processIdentifier: pid_t
-        let element: AXUIElement
+        /// The focused element the capture anchored to. Nil when no focused
+        /// element resolved or the resolved element belonged to another
+        /// process - the Electron shape, where no element identity exists
+        /// and focus continuity rides the frontmost PID lease alone.
+        let element: AXUIElement?
     }
 
     enum ElementResolution {
@@ -76,22 +82,43 @@ enum SelectionReader {
         processIdentifierReader: ProcessIdentifierReader,
         attributeReader: AttributeReader
     ) -> Capture {
-        guard case .resolved(let element) = elementResolver(processIdentifier),
-              processIdentifierReader(element) == processIdentifier,
-              let selection = attemptRead(from: element, attributeReader: attributeReader) else {
+        switch elementResolver(processIdentifier) {
+        case .failed(let error):
+            // A definitive resolution failure - no focused element exists,
+            // as in Electron apps - degrades to the guarded clipboard probe,
+            // where the frontmost PID lease carries focus continuity. A
+            // transient failure (busy app) still fails closed.
+            guard isRetriable(error) else {
+                return .clipboardProbe(ClipboardContext(
+                    processIdentifier: processIdentifier,
+                    element: nil
+                ))
+            }
             return .unavailable
-        }
-        if selection != .unreadable {
-            return .accessibility(Context(
+        case .resolved(let element):
+            guard processIdentifierReader(element) == processIdentifier else {
+                // An element from another process cannot anchor this app's
+                // focus; degrade to the PID-leased probe instead.
+                return .clipboardProbe(ClipboardContext(
+                    processIdentifier: processIdentifier,
+                    element: nil
+                ))
+            }
+            guard let selection = attemptRead(from: element, attributeReader: attributeReader) else {
+                return .unavailable
+            }
+            if selection != .unreadable {
+                return .accessibility(Context(
+                    processIdentifier: processIdentifier,
+                    selection: selection,
+                    element: element
+                ))
+            }
+            return .clipboardProbe(ClipboardContext(
                 processIdentifier: processIdentifier,
-                selection: selection,
                 element: element
             ))
         }
-        return .clipboardProbe(ClipboardContext(
-            processIdentifier: processIdentifier,
-            element: element
-        ))
     }
 
     static func applicationLacksTextSurfaces(for processIdentifier: pid_t) -> Bool {

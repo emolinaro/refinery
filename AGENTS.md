@@ -38,6 +38,13 @@ When updating this file, preserve this bar for all agents and keep entries conci
   Accessibility grant on the code signature, and ad-hoc signing rotates it
   every rebuild, so a fresh binary silently drops the grant (the app detects
   this via the persisted granted-once marker and explains the re-toggle).
+- Selection capture has two fallback shapes: Sublime (focused element
+  resolves, no selection -> probe with element-anchored continuity) and
+  Electron/Slack (AXFocusedUIElement resolves to nothing -> probe with
+  `ClipboardContext.element == nil`, where focus continuity rides the
+  frontmost PID lease alone). Transient resolution errors
+  (`.cannotComplete`/`.invalidUIElement`) still fail closed; see
+  `SelectionReader.capture` and `ClipboardSelectionProbe.capturedFocusRemainsCurrent`.
 - Subscription mode rides the codex CLI's ChatGPT login: `CodexAuthStore`
   reads `~/.codex/auth.json` (read-only discipline, writes only to persist
   OAuth rotation), `ChatGPTSession` gates refresh on definitive expiry
