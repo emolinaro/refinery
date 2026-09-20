@@ -237,13 +237,11 @@ enum SelectionReader {
         if case .resolved = systemWideResolution {
             return systemWideResolution
         }
-        if case .failed(let error) = systemWideResolution, isRetriable(error) {
-            return systemWideResolution
-        }
-        if case .failed(let error) = applicationResolution, isRetriable(error) {
-            return applicationResolution
-        }
-        return systemWideResolution
+        // The app-scoped read is the authority on this app's focus: once the
+        // systemwide read resolves nothing either, its definitive failure
+        // must win over a systemwide read flapping a retriable error, so
+        // capture degrades to the clipboard probe instead of failing closed.
+        return applicationResolution
     }
 
     private static func focusedElement(

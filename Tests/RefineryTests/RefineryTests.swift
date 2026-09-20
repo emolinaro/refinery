@@ -2038,7 +2038,7 @@ final class ClipboardSelectionProbeTests: XCTestCase {
             accessibilityEnabled: { true },
             frontmostApplicationPID: { 101 },
             focusedElementResolver: { _ in .failed(.failure) },
-            applicationLacksTextSurfaces: { _ in true },
+            applicationLacksTextSurfaces: { _ in false },
             synthesizeCopy: { true },
             wait: { _ in
                 waitCount += 1
@@ -2075,7 +2075,7 @@ final class ClipboardSelectionProbeTests: XCTestCase {
             accessibilityEnabled: { true },
             frontmostApplicationPID: { frontmostPID.get() },
             focusedElementResolver: { _ in .failed(.failure) },
-            applicationLacksTextSurfaces: { _ in true },
+            applicationLacksTextSurfaces: { _ in false },
             synthesizeCopy: { true },
             wait: { _ in
                 waitCount += 1
@@ -2107,7 +2107,7 @@ final class ClipboardSelectionProbeTests: XCTestCase {
             accessibilityEnabled: { true },
             frontmostApplicationPID: { 202 },
             focusedElementResolver: { _ in .failed(.failure) },
-            applicationLacksTextSurfaces: { _ in true },
+            applicationLacksTextSurfaces: { _ in false },
             synthesizeCopy: { synthesizeCount += 1; return true },
             wait: { _ in }
         )
@@ -2130,7 +2130,7 @@ final class ClipboardSelectionProbeTests: XCTestCase {
             accessibilityEnabled: { false },
             frontmostApplicationPID: { 101 },
             focusedElementResolver: { _ in .failed(.failure) },
-            applicationLacksTextSurfaces: { _ in true },
+            applicationLacksTextSurfaces: { _ in false },
             synthesizeCopy: { synthesizeCount += 1; return true },
             wait: { _ in }
         )
@@ -2140,10 +2140,12 @@ final class ClipboardSelectionProbeTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), "original")
     }
 
-    func testCopyProbeRevalidatesApplicationCapabilityForElementlessContext() async {
-        // Electron apps expose a full AX tree with text areas even though the
-        // focused element never resolves: the text-surface preflight must
-        // still reject synthesis for such apps.
+    func testCopyProbeSynthesizesForElementlessContextWithTextSurfaces() async {
+        // Elementless contexts skip the text-surface proof - the AX path is
+        // impossible there and the guarded probe is the only possible read -
+        // so an app whose tree has text surfaces still gets synthesis; with
+        // no copy landing, the probe reports no selection and restores the
+        // clipboard.
         let context = clipboardContext(element: nil)
         let pasteboard = NSPasteboard(name: .init("RefineryTests.\(UUID().uuidString)"))
         pasteboard.clearContents()
@@ -2161,8 +2163,8 @@ final class ClipboardSelectionProbeTests: XCTestCase {
             wait: { _ in }
         )
 
-        XCTAssertEqual(outcome, .unreadable)
-        XCTAssertEqual(synthesizeCount, 0)
+        XCTAssertEqual(outcome, .noSelection)
+        XCTAssertEqual(synthesizeCount, 1)
         XCTAssertEqual(pasteboard.string(forType: .string), "original")
     }
 
@@ -3943,9 +3945,10 @@ final class SelectionReaderTests: XCTestCase {
 
     func testCaptureRoutesUnretriableResolutionFailureToClipboardProbe() {
         // Resolution failures that are not transient - attribute unsupported,
-        // API failure, and even permission-style errors - all mean no
-        // element identity exists, so they degrade to the probe too.
-        for error in [AXError.attributeUnsupported, .actionUnsupported, .notEnoughPrecision] {
+        // API failure, noValue (the live Electron signal), and even
+        // permission-style errors - all mean no element identity exists, so
+        // they degrade to the probe too.
+        for error in [AXError.attributeUnsupported, .actionUnsupported, .notEnoughPrecision, .noValue] {
             let capture = SelectionReader.capture(
                 for: 101,
                 elementResolver: { _ in .failed(error) },
@@ -3958,6 +3961,65 @@ final class SelectionReaderTests: XCTestCase {
             }
             XCTAssertNil(context.element)
         }
+    }
+
+    func testFocusedElementResolutionPrefersDefinitiveApplicationFailureOverRetriableSystemWideFlap() {
+        // The live Electron shape: the app-scoped focused-element read gives
+        // the true definitive answer (noValue) while the systemwide read
+        // flaps a retriable cannotComplete. The definitive app-scoped signal
+        // must win so capture degrades to the clipboard probe instead of
+        // failing closed as unavailable.
+        let targetProcessIdentifier: pid_t = 101
+        let application = AXUIElementCreateApplication(targetProcessIdentifier)
+        let systemWide = AXUIElementCreateSystemWide()
+
+        let resolved = SelectionReader.resolveFocusedElement(
+            for: targetProcessIdentifier,
+            applicationElement: { _ in application },
+            systemWideElement: { systemWide },
+            attributeReader: { owner, _ in
+                CFEqual(owner, application)
+                    ? (.noValue, nil)
+                    : (.cannotComplete, nil)
+            },
+            processIdentifierReader: { _ in targetProcessIdentifier }
+        )
+
+        guard case .failed(let error) = resolved else {
+            return XCTFail("Expected the definitive app-scoped failure to win")
+        }
+        XCTAssertEqual(error, .noValue)
+    }
+
+    func testCaptureRoutesLiveElectronResolutionShapeToClipboardProbe() {
+        let targetProcessIdentifier: pid_t = 101
+        let application = AXUIElementCreateApplication(targetProcessIdentifier)
+        let systemWide = AXUIElementCreateSystemWide()
+
+        let capture = SelectionReader.capture(
+            for: targetProcessIdentifier,
+            elementResolver: { pid in
+                SelectionReader.resolveFocusedElement(
+                    for: pid,
+                    applicationElement: { _ in application },
+                    systemWideElement: { systemWide },
+                    attributeReader: { owner, _ in
+                        CFEqual(owner, application)
+                            ? (.noValue, nil)
+                            : (.cannotComplete, nil)
+                    },
+                    processIdentifierReader: { _ in targetProcessIdentifier }
+                )
+            },
+            processIdentifierReader: { _ in targetProcessIdentifier },
+            attributeReader: attributeReader(for: .selected("selection"))
+        )
+
+        guard case .clipboardProbe(let context) = capture else {
+            return XCTFail("Expected the live Electron resolution shape to reach the clipboard probe")
+        }
+        XCTAssertNil(context.element)
+        XCTAssertEqual(context.processIdentifier, targetProcessIdentifier)
     }
 
     func testDirectFocusedElementFromDifferentProcessUsesConstrainedFallback() throws {

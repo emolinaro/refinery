@@ -62,10 +62,12 @@ focused app exposes no AX text surface at all (its menu bar aside), as with
 Sublime Text's custom editor rendering, Refinery falls back to a guarded copy
 probe: it snapshots every current pasteboard representation, synthesizes
 Command-C, reads the copied text, and restores the snapshot before making any
-endpoint request. The same probe covers apps whose focused element never
-resolves through Accessibility at all, as with Electron apps (Slack, VS Code,
-Discord): when no element identity exists, focus continuity rides the
-frontmost application's PID lease. macOS exposes no pasteboard writer
+endpoint request. The same probe also covers apps whose focused element
+never resolves through Accessibility at all, as with Electron apps (Slack,
+VS Code, Discord): for those, the text-surface check is skipped because the
+Accessibility path is impossible there - the guarded probe is the only
+possible read - and focus continuity rides the frontmost application's PID
+lease. macOS exposes no pasteboard writer
 identity, so in such apps the non-empty clipboard read plus the tightly
 focused acceptance window is the strongest available verification that
 selected text was copied. One accepted residual: in these apps, pressing the

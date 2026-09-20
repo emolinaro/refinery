@@ -42,8 +42,12 @@ When updating this file, preserve this bar for all agents and keep entries conci
   resolves, no selection -> probe with element-anchored continuity) and
   Electron/Slack (AXFocusedUIElement resolves to nothing -> probe with
   `ClipboardContext.element == nil`, where focus continuity rides the
-  frontmost PID lease alone). Transient resolution errors
-  (`.cannotComplete`/`.invalidUIElement`) still fail closed; see
+  frontmost PID lease alone). The probe's text-surface proof applies only to
+  element-anchored contexts; elementless contexts skip it because the AX
+  path is impossible there and the guarded probe is the only possible read.
+  `resolveFocusedElement` prefers a definitive app-scoped failure over a
+  systemwide read flapping a retriable error; transient errors
+  (`.cannotComplete`/`.invalidUIElement`) still fail closed. See
   `SelectionReader.capture` and `ClipboardSelectionProbe.capturedFocusRemainsCurrent`.
 - Subscription mode rides the codex CLI's ChatGPT login: `CodexAuthStore`
   reads `~/.codex/auth.json` (read-only discipline, writes only to persist
