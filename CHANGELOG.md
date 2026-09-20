@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-09-20
+
+### Fixed
+
+- Selection capture in Electron apps such as Slack: when an app's
+  accessibility layer exposes no focused element at all, the capture path
+  now routes to the guarded clipboard probe instead of giving up with
+  "Could not read the selection from the frontmost app" - every probe-side
+  guard intact (focus continuity, clipboard ownership, single-writer).
+  Likely also fixes VS Code, Discord, and other Chromium-based apps.
+- The no-mistakes test step now runs the deterministic `swift test`
+  command instead of an improvised agent-driven test session.
+
 ## [0.2.1] - 2026-09-19
 
 ### Fixed
