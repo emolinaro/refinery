@@ -1,0 +1,6 @@
+# no-mistakes gate config - the canonical checks this repo's pipeline runs.
+# Unit tests only (SwiftPM): the captain's standing rule for this lane is
+# unit tests, builds, and code inspection - no live app launches during
+# validation; live verification is a post-PR captain step.
+commands:
+  test: swift test
