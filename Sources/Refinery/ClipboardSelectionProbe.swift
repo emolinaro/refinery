@@ -157,8 +157,11 @@ private final class ApplicationFocusContinuityMonitor: FocusContinuityMonitoring
 }
 
 /// Reads a selection from apps that render text without exposing an AX text
-/// element. The probe first proves that the focused application subtree has no
-/// text-capable role, so native AX-backed apps never reach synthesis.
+/// element. For element-anchored contexts the probe first proves that the
+/// focused application subtree has no text-capable role, so native AX-backed
+/// apps never reach synthesis. Elementless contexts - no focused element ever
+/// resolved - skip that proof because the AX path is impossible there and the
+/// guarded probe is the only possible read.
 enum ClipboardSelectionProbe {
     private static let pollAttempts = 10
     private static let pollIntervalNanoseconds: UInt64 = 30_000_000
@@ -222,16 +225,23 @@ enum ClipboardSelectionProbe {
             return .unreadable
         }
 
-        let preflightChangeCount = pasteboard.changeCount
-        let preflightLacksTextSurfaces = await readApplicationLacksTextSurfaces(
-            for: context.processIdentifier,
-            reader: applicationLacksTextSurfaces
-        )
-        guard pasteboard.changeCount == preflightChangeCount else {
-            return .clipboardFailure(.clipboardChanged)
-        }
-        guard preflightLacksTextSurfaces else {
-            return .unreadable
+        // The text-surface proof keeps the probe away from apps whose AX tree
+        // can expose the selection directly, where the primary AX path is
+        // strictly better. It is vacuous for elementless contexts - the
+        // Electron shape, where no focused element ever resolved - so those
+        // skip it and every remaining guard applies unchanged.
+        if context.element != nil {
+            let preflightChangeCount = pasteboard.changeCount
+            let preflightLacksTextSurfaces = await readApplicationLacksTextSurfaces(
+                for: context.processIdentifier,
+                reader: applicationLacksTextSurfaces
+            )
+            guard pasteboard.changeCount == preflightChangeCount else {
+                return .clipboardFailure(.clipboardChanged)
+            }
+            guard preflightLacksTextSurfaces else {
+                return .unreadable
+            }
         }
         guard capturedFocusRemainsCurrent(
             context,
@@ -254,11 +264,13 @@ enum ClipboardSelectionProbe {
             return .clipboardFailure(.clipboardChanged)
         }
 
-        guard await readApplicationLacksTextSurfaces(
-            for: context.processIdentifier,
-            reader: applicationLacksTextSurfaces
-        ) else {
-            return .unreadable
+        if context.element != nil {
+            guard await readApplicationLacksTextSurfaces(
+                for: context.processIdentifier,
+                reader: applicationLacksTextSurfaces
+            ) else {
+                return .unreadable
+            }
         }
         guard capturedFocusRemainsCurrent(
             context,
@@ -566,13 +578,21 @@ enum ClipboardSelectionProbe {
         focusedElementResolver: (pid_t) -> SelectionReader.ElementResolution
     ) -> Bool {
         guard accessibilityEnabled(),
-              frontmostApplicationPID() == context.processIdentifier,
-              case .resolved(let focusedElement) = focusedElementResolver(
-                  context.processIdentifier
-              ) else {
+              frontmostApplicationPID() == context.processIdentifier else {
             return false
         }
-        return CFEqual(focusedElement, context.element)
+        // With no captured element identity - the Electron shape, where the
+        // focused element never resolved - the frontmost PID lease alone
+        // carries focus continuity; every other guard is unchanged.
+        guard let capturedElement = context.element else {
+            return true
+        }
+        guard case .resolved(let focusedElement) = focusedElementResolver(
+            context.processIdentifier
+        ) else {
+            return false
+        }
+        return CFEqual(focusedElement, capturedElement)
     }
 
     private static func restoreSnapshot(

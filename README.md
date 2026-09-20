@@ -62,17 +62,22 @@ focused app exposes no AX text surface at all (its menu bar aside), as with
 Sublime Text's custom editor rendering, Refinery falls back to a guarded copy
 probe: it snapshots every current pasteboard representation, synthesizes
 Command-C, reads the copied text, and restores the snapshot before making any
-endpoint request. macOS exposes no pasteboard writer identity, so in such apps
-the non-empty clipboard read plus the tightly focused acceptance window is the
-strongest available verification that selected text was copied. One accepted
-residual: in these apps, pressing the hotkey with no selection can polish the
-current line, because apps like Sublime Text copy the current line on
-Command-C with nothing selected. If the clipboard cannot be snapshotted or
-restored safely, the run stops and surfaces an error instead of silently
-losing clipboard data. Quitting while a probe owns the clipboard defers
-termination until restoration finishes; only Force Quit can interrupt that
-restore, and a failed restore cancels the quit. Native apps such as TextEdit,
-Mail, and Safari stay on the primary AX path.
+endpoint request. The same probe also covers apps whose focused element
+never resolves through Accessibility at all, as with Electron apps (Slack,
+VS Code, Discord): for those, the text-surface check is skipped because the
+Accessibility path is impossible there - the guarded probe is the only
+possible read - and focus continuity rides the frontmost application's PID
+lease. macOS exposes no pasteboard writer
+identity, so in such apps the non-empty clipboard read plus the tightly
+focused acceptance window is the strongest available verification that
+selected text was copied. One accepted residual: in these apps, pressing the
+hotkey with no selection can polish the current line, because apps like
+Sublime Text copy the current line on Command-C with nothing selected. If the
+clipboard cannot be snapshotted or restored safely, the run stops and
+surfaces an error instead of silently losing clipboard data. Quitting while a
+probe owns the clipboard defers termination until restoration finishes; only
+Force Quit can interrupt that restore, and a failed restore cancels the quit.
+Native apps such as TextEdit, Mail, and Safari stay on the primary AX path.
 
 ## Settings
 
